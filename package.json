@@ -1,0 +1,48 @@
+{
+  "name": "app",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "jest",
+    "start": "nodemon server.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SachinthaLakshan/postgen-backend.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/SachinthaLakshan/postgen-backend/issues"
+  },
+  "homepage": "https://github.com/SachinthaLakshan/postgen-backend#readme",
+  "dependencies": {
+    "@google/genai": "^0.12.0",
+    "@paypal/checkout-server-sdk": "^1.0.3",
+    "@runware/sdk-js": "^1.1.40",
+    "aws-sdk": "^2.1692.0",
+    "bcrypt": "^6.0.0",
+    "canvas": "^3.1.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.5.0",
+    "express": "^5.1.0",
+    "fs": "^0.0.1-security",
+    "google-auth-library": "^9.15.1",
+    "jsonwebtoken": "^9.0.2",
+    "moment": "^2.30.1",
+    "mongoose": "^8.15.1",
+    "multer": "^2.0.1",
+    "mysql2": "^3.14.1",
+    "node-fetch": "^2.7.0",
+    "nodemon": "^3.1.10",
+    "path": "^0.12.7",
+    "sharp": "^0.34.3",
+    "supertest": "^7.1.1"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "mongodb-memory-server": "^10.1.4"
+  }
+}
