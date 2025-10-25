@@ -26,7 +26,7 @@ app.use(express.json()); // Middleware to parse JSON bodies
 
 // CORS Configuration
 const corsOptions = {
-  origin: ['http://localhost:3000','https://postgen-new.vercel.app','https://www.aipicedit.com'],
+  origin: ['http://localhost:3000','https://postgen-new.vercel.app','https://www.aipicedit.com','https://aipicedit-frontend.vercel.app'],
   optionsSuccessStatus: 200 // some legacy browsers (IE11, various SmartTVs) choke on 204
 };
 app.use(cors(corsOptions));
