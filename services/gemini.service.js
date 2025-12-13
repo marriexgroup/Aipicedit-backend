@@ -57,4 +57,35 @@ function getRandomWords(text, count) {
   return [...selected];
 }
 
-module.exports = { generatePrompts };
+async function chatWithAI(message, history = []) {
+  const response = await retryHelper(async () => {
+    // Map history to Gemini format
+    const contents = history.map(msg => ({
+      role: msg.role === 'user' ? 'user' : 'model',
+      parts: [{ text: msg.content }], // Assuming msg.content is the text
+    }));
+
+    // Add the current message
+    contents.push({
+      role: 'user',
+      parts: [{ text: message }],
+    });
+
+    const result = await ai.models.generateContent({
+      model: "gemini-2.0-flash",
+      contents: contents,
+    });
+
+    return result;
+  });
+
+  if (!response.candidates?.[0]?.content) {
+    throw new Error("No content returned from Gemini");
+  }
+
+  // Assuming the SDK returns an object where .text is the string content, 
+  // based on existing usage `parseFacts(response.text, ...)`
+  return response.text || response.candidates[0].content.parts[0].text;
+}
+
+module.exports = { generatePrompts, chatWithAI };
