@@ -15,6 +15,7 @@ const videoRoutes = require('./routes/video.routes'); // Import video routes
 const longvideoRoutes = require('./routes/longvideo.routes'); // Import long video routes
 const paypalRoutes = require('./routes/paypal.routes'); // Import PayPal routes
 const configsRoutes = require('./routes/configs.routes');
+const aiAssistantRoutes = require('./routes/aiAssistant.routes');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -26,7 +27,7 @@ app.use(express.json()); // Middleware to parse JSON bodies
 
 // CORS Configuration
 const corsOptions = {
-  origin: ['http://localhost:3000','https://postgen-new.vercel.app','https://www.aipicedit.com','https://aipicedit-frontend.vercel.app'],
+  origin: ['http://localhost:3000', 'https://postgen-new.vercel.app', 'https://www.aipicedit.com', 'https://aipicedit-frontend.vercel.app'],
   optionsSuccessStatus: 200 // some legacy browsers (IE11, various SmartTVs) choke on 204
 };
 app.use(cors(corsOptions));
@@ -52,6 +53,7 @@ app.use('/api/longvideo', longvideoRoutes);
 // Mount PayPal routes
 app.use('/api/paypal', paypalRoutes);
 app.use('/api/configs', configsRoutes);
+app.use('/api/ai-assistant', aiAssistantRoutes);
 
 
 // Global error handler (optional, but good practice)
