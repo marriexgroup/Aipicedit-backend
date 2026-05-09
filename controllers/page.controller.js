@@ -5,11 +5,22 @@ const s3Service = require('../services/s3.service');
 // Create a new page
 exports.createPage = async (req, res) => {
   try {
-    const { pageName, pageUrl, accessToken } = req.body;
+    const { pageName, pageUrl, accessToken, facebookPageId } = req.body;
     const userId = req.params.userId;
 
     if (!pageName || !pageUrl || !accessToken) {
       return res.status(400).json({ message: "Missing required fields: pageName, pageUrl, accessToken" });
+    }
+
+    const resolvedFacebookPageId =
+      facebookPageId ||
+      pageUrl
+        .replace(/^https?:\/\/(www\.)?facebook\.com\//i, "")
+        .split("?")[0]
+        .split("/")[0];
+
+    if (!resolvedFacebookPageId) {
+      return res.status(400).json({ message: "facebookPageId is required." });
     }
 
     const user = await User.findById(userId);
@@ -45,6 +56,7 @@ exports.createPage = async (req, res) => {
     const newPage = new Page({
       user: userId,
       pageName,
+      facebookPageId: resolvedFacebookPageId,
       pageUrl,
       profileImage: profileImageUrl,
       coverImage: coverImageUrl,
@@ -108,7 +120,7 @@ exports.getPagesByUser = async (req, res) => {
 // Update a page by ID
 exports.updatePage = async (req, res) => {
   try {
-    const { pageName, pageUrl, profileImage, coverImage, accessToken } = req.body;
+    const { pageName, pageUrl, profileImage, coverImage, accessToken, facebookPageId } = req.body;
     const pageId = req.params.pageId;
     const userId = req.params.userId;
 
@@ -129,6 +141,7 @@ exports.updatePage = async (req, res) => {
     if (profileImage) updateFields.profileImage = profileImage;
     if (coverImage) updateFields.coverImage = coverImage;
     if (accessToken) updateFields.accessToken = accessToken;
+    if (facebookPageId) updateFields.facebookPageId = facebookPageId;
 
     const updatedPage = await Page.findByIdAndUpdate(
       pageId,
