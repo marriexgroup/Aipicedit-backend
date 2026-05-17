@@ -23,7 +23,8 @@ const port = process.env.PORT || 3000;
 const cors = require('cors');
 const { default: mongoose } = require('mongoose');
 
-app.use(express.json()); // Middleware to parse JSON bodies
+app.use(express.json({ limit: '50mb' })); // Middleware to parse JSON bodies with increased limit for base64 images
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // CORS Configuration
 const corsOptions = {

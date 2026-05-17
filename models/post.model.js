@@ -3,28 +3,23 @@ const { Schema } = mongoose;
 
 // Sub-schema for the content/fact
 const ContentSchema = new Schema({
-  fact: { type: String, required: true },
-  description: { type: String, required: true },
-  highlights: { type: [String], required: true },
-  _id: { type: Schema.Types.ObjectId, required: true }
+  fact: { type: String, required: false },
+  description: { type: String, required: false },
+  highlights: { type: [String], required: false },
+  text: { type: String, required: false },
+  _id: { type: Schema.Types.ObjectId, required: false }
 });
 
 // Sub-schema for individual posts
 const PostSchema = new Schema({
   generationId: { 
     type: Schema.Types.ObjectId, 
-    required: true,
+    required: false,
     ref: 'Generation' // Reference to the original generation if needed
   },
   imageUrl: { 
     type: String, 
-    required: true,
-    validate: {
-      validator: function(v) {
-        return /^(https?|ftp):\/\/[^\s/$.?#].[^\s]*$/.test(v);
-      },
-      message: props => `${props.value} is not a valid URL!`
-    }
+    required: true
   },
   content: { 
     type: ContentSchema,
@@ -32,7 +27,7 @@ const PostSchema = new Schema({
   },
   generationDate: { 
     type: Date, 
-    required: true 
+    required: false 
   },
   scheduleDate: { 
     type: Date, 
