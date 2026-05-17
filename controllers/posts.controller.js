@@ -1,6 +1,9 @@
 const { default: mongoose } = require("mongoose");
 const {  Posts } = require("../db");
 const moment = require("moment");
+const Page = require('../models/page.model');
+const { uploadImage } = require('../services/s3.service');
+const fetch = require('node-fetch');
 
 // Controller for admin user management (placeholder)
 function getScheduledPostsByUser(req, res) {
@@ -46,14 +49,19 @@ async function createScheduledPosts(req, res) {
             });
         }
 
+        const pageDoc = await Page.findById(pageId);
+        if (!pageDoc) {
+            return res.status(404).json({ error: "Page not found" });
+        }
+
         // Validate each post
-        const validatedPosts = posts.map(post => {
-            if (!post.generationId || !post.imageUrl || !post.content || 
+        const validatedPosts = await Promise.all(posts.map(async post => {
+            if (!post.imageUrl || !post.content || 
                 !post.scheduleDate || !post.scheduleTime) {
                 throw new Error('All post fields are required');
             }
 
-            if (!mongoose.Types.ObjectId.isValid(post.generationId)) {
+            if (post.generationId && !mongoose.Types.ObjectId.isValid(post.generationId)) {
                 throw new Error('Invalid generation ID');
             }
 
@@ -70,15 +78,59 @@ async function createScheduledPosts(req, res) {
             const [hours, minutes] = post.scheduleTime.split(':');
             scheduledDateTime.setHours(hours, minutes);
 
+            // Schedule with Facebook Graph API
+            const unixTimestamp = Math.floor(scheduledDateTime.getTime() / 1000);
+            const nowTimestamp = Math.floor(Date.now() / 1000);
+            if (unixTimestamp < nowTimestamp + 600) {
+                throw new Error('Scheduled time must be at least 10 minutes from now for Facebook Graph API.');
+            }
+            if (unixTimestamp > nowTimestamp + (75 * 24 * 3600)) {
+                throw new Error('Scheduled time cannot be more than 75 days from now for Facebook Graph API.');
+            }
+
+            let finalImageUrl = post.imageUrl;
+            let fbEndpoint = `https://graph.facebook.com/v21.0/${pageDoc.facebookPageId}/photos`;
+            let fbPayload = {
+                message: post.content.text || '',
+                published: false,
+                scheduled_publish_time: unixTimestamp,
+                access_token: pageDoc.accessToken
+            };
+
+            if (finalImageUrl && finalImageUrl.startsWith('data:image')) {
+                const uploadResult = await uploadImage(finalImageUrl);
+                finalImageUrl = uploadResult.Location;
+                fbPayload.url = finalImageUrl;
+            } else if (!finalImageUrl || finalImageUrl.includes('placehold.co')) {
+                // Text only post
+                fbEndpoint = `https://graph.facebook.com/v21.0/${pageDoc.facebookPageId}/feed`;
+            } else {
+                // Pre-existing valid URL
+                fbPayload.url = finalImageUrl;
+            }
+
+            const fbResponse = await fetch(fbEndpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(fbPayload)
+            });
+
+            const fbData = await fbResponse.json();
+            if (fbData.error) {
+                console.error("Facebook API Full Error:", JSON.stringify(fbData.error, null, 2));
+                throw new Error(`Facebook API Error: ${fbData.error.message} - Details: ${JSON.stringify(fbData.error)}`);
+            }
+
             return {
                 ...post,
+                imageUrl: finalImageUrl,
                 scheduledDateTime,
                 content: {
                     ...post.content,
                     _id: new mongoose.Types.ObjectId(post.content._id)
                 }
             };
-        });
+        }));
 
         // Create scheduled posts
         const scheduledPosts = new Posts({
