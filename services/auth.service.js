@@ -83,8 +83,14 @@ async function loginUser(username, password) {
   const isPasswordMatch = await bcrypt.compare(password, user.password);
 
   if (isPasswordMatch) {
-    // Ensure role is populated and has a name, otherwise default or handle error
-    const roleName = user.role && user.role.name ? user.role.name : 'user'; // Default if role not populated
+    let roleName = 'user';
+    if (user.role) {
+      if (typeof user.role === 'string') {
+        roleName = user.role;
+      } else if (user.role.name) {
+        roleName = user.role.name;
+      }
+    }
 
     const token = jwt.sign(
       { userId: user._id, username: user.username, role: roleName },

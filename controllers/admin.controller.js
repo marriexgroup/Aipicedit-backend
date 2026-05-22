@@ -1,3 +1,5 @@
+const { User, Generation, Page, Posts } = require('../db');
+
 // Controller for admin dashboard
 function getDashboard(req, res) {
   // req.user is populated by authenticateToken middleware
@@ -11,22 +13,109 @@ function getDashboard(req, res) {
   });
 }
 
-// Controller for admin user management (placeholder)
-function getUsers(req, res) {
-  // req.user is populated by authenticateToken middleware
-  // In a real app, you'd fetch and return user data here
-  res.json({
-    message: 'Admin User Management page.',
-    user: {
-      id: req.user.userId,
-      username: req.user.username,
-      role: req.user.role
-    },
-    users: [] // Placeholder for user list
-  });
+async function getUsers(req, res) {
+  try {
+    const users = await User.find({ role: 'user' }, { password: 0 }).lean();
+    res.json({
+      success: true,
+      users
+    });
+  } catch (err) {
+    console.error('Error fetching users:', err);
+    res.status(500).json({ message: 'Failed to fetch users' });
+  }
 }
 
-const { User, Generation, Page } = require('../db');
+async function getAllPages(req, res) {
+  try {
+    const adminUserId = req.user.userId;
+    const pages = await Page.find({ user: adminUserId })
+      .populate('user', 'username')
+      .populate('assignedUsers', 'username')
+      .lean();
+    res.json({
+      success: true,
+      pages
+    });
+  } catch (err) {
+    console.error('Error fetching pages:', err);
+    res.status(500).json({ message: 'Failed to fetch pages' });
+  }
+}
+
+async function assignPage(req, res) {
+  try {
+    const { pageId } = req.params;
+    const { userIds } = req.body;
+
+    if (!Array.isArray(userIds)) {
+      return res.status(400).json({ message: 'userIds must be an array' });
+    }
+
+    const updatedPage = await Page.findByIdAndUpdate(
+      pageId,
+      { $set: { assignedUsers: userIds } },
+      { new: true }
+    );
+
+    if (!updatedPage) {
+      return res.status(404).json({ message: 'Page not found' });
+    }
+
+    res.json({
+      success: true,
+      page: updatedPage
+    });
+  } catch (err) {
+    console.error('Error assigning page:', err);
+    res.status(500).json({ message: 'Failed to assign page' });
+  }
+}
+
+async function getAssignedPosts(req, res) {
+  try {
+    const adminUserId = req.user.userId;
+    const pages = await Page.find({ user: adminUserId }).lean();
+    
+    const pagesMap = new Map(pages.map(p => [String(p._id), p]));
+    const adminPageIds = Array.from(pagesMap.keys());
+    
+    if (adminPageIds.length === 0) {
+      return res.json({
+        success: true,
+        count: 0,
+        data: []
+      });
+    }
+
+    const posts = await Posts.find({ page: { $in: adminPageIds } }).lean();
+    const userIds = [...new Set(posts.map(p => String(p.createdBy)))].filter(Boolean);
+    
+    const users = await User.find({ _id: { $in: userIds } }, { password: 0 }).lean();
+    const usersMap = new Map(users.map(u => [String(u._id), u]));
+    
+    const result = posts.map(post => {
+      const pageInfo = pagesMap.get(post.page);
+      const userInfo = usersMap.get(String(post.createdBy));
+      return {
+        ...post,
+        pageDetails: pageInfo || null,
+        userDetails: userInfo || null
+      };
+    });
+    
+    const filteredResult = result.filter(r => r.pageDetails && r.pageDetails.assignedUsers && r.pageDetails.assignedUsers.length > 0);
+    
+    res.json({
+      success: true,
+      count: filteredResult.length,
+      data: filteredResult
+    });
+  } catch (err) {
+    console.error('Error fetching assigned posts:', err);
+    res.status(500).json({ message: 'Failed to fetch assigned posts' });
+  }
+}
 
 async function getAllUsersDetailsPublic(req, res) {
   try {
@@ -73,5 +162,8 @@ async function getAllUsersDetailsPublic(req, res) {
 module.exports = {
   getDashboard,
   getUsers,
+  getAllPages,
+  assignPage,
+  getAssignedPosts,
   getAllUsersDetailsPublic,
 };

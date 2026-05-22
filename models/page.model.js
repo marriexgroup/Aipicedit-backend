@@ -8,6 +8,7 @@ const pageSchema = new mongoose.Schema({
   profileImage: { type: String },
   coverImage: { type: String },
   accessToken: { type: String, required: true },
+  assignedUsers: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
 });
 
 module.exports = mongoose.model('Page', pageSchema);
