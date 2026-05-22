@@ -25,4 +25,28 @@ router.get(
   adminController.getUsers
 );
 
+// Admin pages route - requires admin authentication
+router.get(
+  '/pages',
+  authMiddleware.authenticateToken,
+  authMiddleware.authorizeRoles(['admin']),
+  adminController.getAllPages
+);
+
+// Admin assign page route - requires admin authentication
+router.put(
+  '/pages/assign/:pageId',
+  authMiddleware.authenticateToken,
+  authMiddleware.authorizeRoles(['admin']),
+  adminController.assignPage
+);
+
+// Admin assigned posts route - requires admin authentication
+router.get(
+  '/assigned-posts',
+  authMiddleware.authenticateToken,
+  authMiddleware.authorizeRoles(['admin']),
+  adminController.getAssignedPosts
+);
+
 module.exports = router;

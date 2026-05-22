@@ -105,7 +105,12 @@ exports.getPagesByUser = async (req, res) => {
       return res.status(400).json({ message: "User ID is required in parameters." });
     }
 
-    const pages = await Page.find({ user: userId });
+    const pages = await Page.find({
+      $or: [
+        { user: userId },
+        { assignedUsers: userId }
+      ]
+    });
 
     if (pages && pages.length > 0) {
       res.status(200).json(pages);
