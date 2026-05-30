@@ -1,5 +1,5 @@
 const { default: mongoose } = require("mongoose");
-const {  Posts } = require("../db");
+const { Posts, User } = require("../db");
 const moment = require("moment");
 const Page = require('../models/page.model');
 const { uploadImage } = require('../services/s3.service');
@@ -155,7 +155,78 @@ return res.status(200).json({
 }
 
 
+// Get all posts visible to a regular user:
+// 1. Posts they created themselves
+// 2. Posts on pages where they are in assignedUsers
+async function getUserPosts(req, res) {
+    try {
+        const { userId } = req.params;
+
+        if (!userId) {
+            return res.status(400).json({ error: "User ID is required." });
+        }
+
+        // Find pages assigned to this user
+        const assignedPages = await Page.find({ assignedUsers: userId }).lean();
+        const assignedPageIds = assignedPages.map(p => String(p._id));
+
+        // Find own pages (pages created by this user)
+        const ownPages = await Page.find({ user: userId }).lean();
+        const ownPageIds = ownPages.map(p => String(p._id));
+
+        // Combine all relevant page IDs (assigned + own)
+        const allRelevantPageIds = [...new Set([...assignedPageIds, ...ownPageIds])];
+
+        // Build all pages map for lookup
+        const allPages = [...assignedPages, ...ownPages];
+        const pagesMap = new Map();
+        allPages.forEach(p => pagesMap.set(String(p._id), p));
+
+        // Fetch posts: created by user OR on relevant pages
+        const posts = await Posts.find({
+            $or: [
+                { createdBy: userId },
+                { page: { $in: allRelevantPageIds } }
+            ]
+        }).lean();
+
+        // Fetch all involved user ids
+        const userIds = [...new Set(posts.map(p => String(p.createdBy)).filter(Boolean))];
+        const users = await User.find({ _id: { $in: userIds } }, { password: 0 }).lean();
+        const usersMap = new Map(users.map(u => [String(u._id), u]));
+
+        const result = posts.map(post => {
+            const pageInfo = pagesMap.get(String(post.page)) || null;
+            const userInfo = usersMap.get(String(post.createdBy)) || null;
+            return {
+                ...post,
+                pageDetails: pageInfo ? {
+                    _id: pageInfo._id,
+                    pageName: pageInfo.pageName,
+                    profileImage: pageInfo.profileImage,
+                    facebookPageId: pageInfo.facebookPageId,
+                } : null,
+                userDetails: userInfo ? {
+                    _id: userInfo._id,
+                    username: userInfo.username,
+                } : null,
+            };
+        });
+
+        res.json({
+            success: true,
+            count: result.length,
+            data: result
+        });
+    } catch (err) {
+        console.error('Error fetching user posts:', err);
+        res.status(500).json({ message: 'Failed to fetch user posts' });
+    }
+}
+
+
 module.exports = {
     getScheduledPostsByUser,
-    createScheduledPosts
+    createScheduledPosts,
+    getUserPosts,
 };

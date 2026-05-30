@@ -28,8 +28,8 @@ async function getUsers(req, res) {
 
 async function getAllPages(req, res) {
   try {
-    const adminUserId = req.user.userId;
-    const pages = await Page.find({ user: adminUserId })
+    // Return all pages across all users so admins have full visibility
+    const pages = await Page.find({})
       .populate('user', 'username')
       .populate('assignedUsers', 'username')
       .lean();
@@ -74,13 +74,10 @@ async function assignPage(req, res) {
 
 async function getAssignedPosts(req, res) {
   try {
-    const adminUserId = req.user.userId;
-    const pages = await Page.find({ user: adminUserId }).lean();
-    
-    const pagesMap = new Map(pages.map(p => [String(p._id), p]));
-    const adminPageIds = Array.from(pagesMap.keys());
-    
-    if (adminPageIds.length === 0) {
+    // Fetch ALL pages across all users so admin sees every post in the system
+    const pages = await Page.find({}).lean();
+
+    if (pages.length === 0) {
       return res.json({
         success: true,
         count: 0,
@@ -88,24 +85,37 @@ async function getAssignedPosts(req, res) {
       });
     }
 
-    const posts = await Posts.find({ page: { $in: adminPageIds } }).lean();
+    const pagesMap = new Map(pages.map(p => [String(p._id), p]));
+    const allPageIds = Array.from(pagesMap.keys());
+
+    // Fetch ALL posts across all pages
+    const posts = await Posts.find({ page: { $in: allPageIds } }).lean();
     const userIds = [...new Set(posts.map(p => String(p.createdBy)))].filter(Boolean);
-    
+
     const users = await User.find({ _id: { $in: userIds } }, { password: 0 }).lean();
     const usersMap = new Map(users.map(u => [String(u._id), u]));
-    
+
     const result = posts.map(post => {
-      const pageInfo = pagesMap.get(post.page);
+      const pageInfo = pagesMap.get(String(post.page));
       const userInfo = usersMap.get(String(post.createdBy));
       return {
         ...post,
-        pageDetails: pageInfo || null,
-        userDetails: userInfo || null
+        pageDetails: pageInfo ? {
+          _id: pageInfo._id,
+          pageName: pageInfo.pageName,
+          profileImage: pageInfo.profileImage,
+          facebookPageId: pageInfo.facebookPageId,
+        } : null,
+        userDetails: userInfo ? {
+          _id: userInfo._id,
+          username: userInfo.username,
+        } : null,
       };
     });
-    
-    const filteredResult = result.filter(r => r.pageDetails && r.pageDetails.assignedUsers && r.pageDetails.assignedUsers.length > 0);
-    
+
+    // Only return posts whose page was found in the DB
+    const filteredResult = result.filter(r => r.pageDetails);
+
     res.json({
       success: true,
       count: filteredResult.length,
