@@ -36,7 +36,7 @@ async function registerUser(username, password, roleName = 'user') {
     const token = jwt.sign(
       { userId: newUser._id, username: newUser.username, role: roleName }, // Use roleName directly
       JWT_SECRET,
-      { expiresIn: '1h' }
+      { expiresIn: '30d' }
     );
 
     // Prepare user object for response (excluding password)
@@ -95,7 +95,7 @@ async function loginUser(username, password) {
     const token = jwt.sign(
       { userId: user._id, username: user.username, role: roleName },
       JWT_SECRET,
-      { expiresIn: '1h' }
+      { expiresIn: '30d' }
     );
 
     // Prepare user object for response (excluding password)
