@@ -8,7 +8,7 @@ async function generatePrompts(basePrompt, numberOfFacts, highlightCount) {
   const response = await retryHelper(async () => {
     const modifiedPrompt = createPrompt(basePrompt, numberOfFacts);
     const textResponse = await ai.models.generateContent({
-      model: "gemini-2.0-flash",
+      model: "gemini-3.5-flash",
       contents: modifiedPrompt,
     });
     return textResponse;
@@ -72,7 +72,7 @@ async function chatWithAI(message, history = []) {
     });
 
     const result = await ai.models.generateContent({
-      model: "gemini-2.0-flash",
+      model: "gemini-3.5-flash",
       contents: contents,
     });
 
