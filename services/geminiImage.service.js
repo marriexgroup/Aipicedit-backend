@@ -32,7 +32,7 @@ async function generateImage(fact, pageName, colors, noTextOverlay, templateNo, 
 
   const response = await retryHelper(async () => {
     const generatedImage = await ai.models.generateContent({
-      model: "gemini-2.5-flash-image-preview",
+      model: "gemini-2.5-flash-image",
       contents: [prompt],
       // generationConfig: {
       //   aspectRatio:'9:16' // Specify the desired aspect ratio here
