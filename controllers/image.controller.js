@@ -512,7 +512,7 @@ async function generateImagesNoneTemplate(req, res) {
       const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
       
       const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash-image-preview",
+        model: "gemini-2.5-flash-image",
         contents: [prompt],
       });
       
@@ -621,7 +621,7 @@ async function generateImageWithPrompt(req, res) {
       const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
       
       const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash-image-preview",
+        model: "gemini-2.5-flash-image",
         contents: [
           {
             text: prompt
