@@ -56,50 +56,29 @@ async function createScheduledPosts(req, res) {
 
         // Validate each post
         const validatedPosts = await Promise.all(posts.map(async post => {
-            if (!post.imageUrl || !post.content) {
-                throw new Error('imageUrl and content are required for each post');
-            }
-
-            // ── Timezone-safe datetime resolution ──────────────────────────────
-            // Primary path: frontend sends a full ISO 8601 UTC string (scheduledAt).
-            // Fallback: legacy separate date + time strings (timezone-imprecise, kept
-            // for backward compatibility with any older clients).
-            let scheduledDateTime;
-
-            if (post.scheduledAt) {
-                scheduledDateTime = new Date(post.scheduledAt);
-                if (isNaN(scheduledDateTime.getTime())) {
-                    throw new Error(`Invalid scheduledAt value: ${post.scheduledAt}`);
-                }
-            } else if (post.scheduleDate && post.scheduleTime) {
-                // Legacy path — assumes times are in UTC (warn in logs)
-                console.warn('[posts.controller] Using legacy scheduleDate+scheduleTime — timezone may be imprecise. Send scheduledAt instead.');
-
-                if (!moment(post.scheduleDate, 'YYYY-MM-DD', true).isValid()) {
-                    throw new Error('Invalid schedule date format. Use YYYY-MM-DD');
-                }
-                if (!moment(post.scheduleTime, 'HH:mm', true).isValid()) {
-                    throw new Error('Invalid schedule time format. Use HH:mm');
-                }
-
-                const [hours, minutes] = post.scheduleTime.split(':').map(Number);
-                scheduledDateTime = new Date(post.scheduleDate);
-                // setUTCHours treats the time as UTC, avoiding server-local-time drift
-                scheduledDateTime.setUTCHours(hours, minutes, 0, 0);
-            } else {
-                throw new Error('Each post requires either scheduledAt (ISO string) or both scheduleDate and scheduleTime');
+            if (!post.imageUrl || !post.content || 
+                !post.scheduleDate || !post.scheduleTime) {
+                throw new Error('All post fields are required');
             }
 
             if (post.generationId && !mongoose.Types.ObjectId.isValid(post.generationId)) {
                 throw new Error('Invalid generation ID');
             }
 
-            // Derive legacy storage fields from the authoritative UTC timestamp
-            const pad = (n) => String(n).padStart(2, '0');
-            const utcDateString = `${scheduledDateTime.getUTCFullYear()}-${pad(scheduledDateTime.getUTCMonth() + 1)}-${pad(scheduledDateTime.getUTCDate())}`;
-            const utcTimeString = `${pad(scheduledDateTime.getUTCHours())}:${pad(scheduledDateTime.getUTCMinutes())}`;
+            if (!moment(post.scheduleDate, 'YYYY-MM-DD', true).isValid()) {
+                throw new Error('Invalid schedule date format. Use YYYY-MM-DD');
+            }
 
-            // Validate against Facebook Graph API time constraints
+            if (!moment(post.scheduleTime, 'HH:mm', true).isValid()) {
+                throw new Error('Invalid schedule time format. Use HH:mm');
+            }
+
+            // Combine date and time for easier querying
+            const scheduledDateTime = new Date(post.scheduleDate);
+            const [hours, minutes] = post.scheduleTime.split(':');
+            scheduledDateTime.setHours(hours, minutes);
+
+            // Schedule with Facebook Graph API
             const unixTimestamp = Math.floor(scheduledDateTime.getTime() / 1000);
             const nowTimestamp = Math.floor(Date.now() / 1000);
             if (unixTimestamp < nowTimestamp + 600) {
@@ -145,13 +124,7 @@ async function createScheduledPosts(req, res) {
             return {
                 ...post,
                 imageUrl: finalImageUrl,
-                // Canonical UTC timestamp
-                scheduledAt: scheduledDateTime,
                 scheduledDateTime,
-                // Legacy UTC-derived fields for display/compat
-                scheduleDate: utcDateString,
-                scheduleTime: utcTimeString,
-                timezone: post.timezone || 'UTC',
                 content: {
                     ...post.content,
                     _id: new mongoose.Types.ObjectId(post.content._id)
