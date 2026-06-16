@@ -1,6 +1,6 @@
 const { default: mongoose } = require("mongoose");
 const { Posts, User } = require("../db");
-const moment = require("moment");
+const moment = require("moment-timezone");
 const Page = require('../models/page.model');
 const { uploadImage } = require('../services/s3.service');
 const fetch = require('node-fetch');
@@ -54,6 +54,9 @@ async function createScheduledPosts(req, res) {
             return res.status(404).json({ error: "Page not found" });
         }
 
+        const userDoc = await User.findById(userId);
+        const userTimezone = userDoc?.timezone || 'UTC';
+
         // Validate each post
         const validatedPosts = await Promise.all(posts.map(async post => {
             if (!post.imageUrl || !post.content || 
@@ -73,14 +76,16 @@ async function createScheduledPosts(req, res) {
                 throw new Error('Invalid schedule time format. Use HH:mm');
             }
 
-            // Combine date and time for easier querying
-            const scheduledDateTime = new Date(post.scheduleDate);
-            const [hours, minutes] = post.scheduleTime.split(':');
-            scheduledDateTime.setHours(hours, minutes);
+            // Parse date and time in the user's localized timezone
+            const scheduledMoment = moment.tz(`${post.scheduleDate} ${post.scheduleTime}`, 'YYYY-MM-DD HH:mm', userTimezone);
+            if (!scheduledMoment.isValid()) {
+                throw new Error('Invalid schedule date or time');
+            }
 
-            // Schedule with Facebook Graph API
-            const unixTimestamp = Math.floor(scheduledDateTime.getTime() / 1000);
+            const scheduledDateTime = scheduledMoment.toDate();
+            const unixTimestamp = scheduledMoment.unix();
             const nowTimestamp = Math.floor(Date.now() / 1000);
+            
             if (unixTimestamp < nowTimestamp + 600) {
                 throw new Error('Scheduled time must be at least 10 minutes from now for Facebook Graph API.');
             }

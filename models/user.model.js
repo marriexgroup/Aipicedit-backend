@@ -25,6 +25,10 @@ const UserSchema = new mongoose.Schema({
   },
   usedStorange:{
     type: Number
+  },
+  timezone: {
+    type: String,
+    default: 'UTC'
   }
 });
 
