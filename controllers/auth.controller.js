@@ -66,7 +66,8 @@ const getAuthUser = async (req, res) => {
       regdate: user[0].regdate,
       accountbalance: user[0].accountbalance,
       usedStorange:user[0].usedStorange,
-      availableStorange:user[0].availableStorange
+      availableStorange:user[0].availableStorange,
+      timezone: user[0].timezone || 'UTC'
     };
     res.status(200).json({ data: userToReturn });
   } catch (error) {
