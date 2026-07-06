@@ -44,7 +44,7 @@ Make sure all numbers are spelled out in the voiceover text (e.g. "one point thr
  */
 async function generateVoiceVideo(req, res) {
   try {
-    const { prompt, userId } = req.body;
+    const { prompt, userId, aspectRatio = '16:9', voiceName = 'en-US-Wavenet-D' } = req.body;
 
     if (!prompt) {
       return res.status(400).json({
@@ -73,6 +73,8 @@ async function generateVoiceVideo(req, res) {
     const voiceVideo = new VoiceVideo({
       userId,
       prompt,
+      aspectRatio,
+      voiceName,
       status: 'pending',
     });
     await voiceVideo.save();
@@ -113,6 +115,9 @@ async function processVoiceVideoGeneration(videoId, userId) {
       return;
     }
 
+    const aspectRatio = job.aspectRatio || '16:9';
+    const voiceName = job.voiceName || 'en-US-Wavenet-D';
+
     // Step 1: Divide into scenes using Gemini
     console.log(`[Worker] Step 1: Querying Gemini for scene decomposition...`);
     let geminiResponse;
@@ -150,6 +155,10 @@ async function processVoiceVideoGeneration(videoId, userId) {
     job.status = 'images_generating';
     await job.save();
 
+    const isVertical = aspectRatio === '9:16';
+    const runwareWidth = isVertical ? 576 : 1024;
+    const runwareHeight = isVertical ? 1024 : 576;
+
     for (let i = 0; i < job.scenes.length; i++) {
       const scene = job.scenes[i];
       console.log(`[Worker] Generating image for scene ${i + 1}/${job.scenes.length}: "${scene.imagePrompt.substring(0, 40)}..."`);
@@ -157,8 +166,8 @@ async function processVoiceVideoGeneration(videoId, userId) {
         const generatedImage = await runware.requestImages({
           positivePrompt: scene.imagePrompt + ", hyper-realistic, cinematic lighting, 8k resolution, detailed, space exploration documentary style",
           negativePrompt: "text, watermark, logo, bad quality, drawing, cartoon",
-          width: 1024,
-          height: 576, // 16:9 aspect ratio
+          width: runwareWidth,
+          height: runwareHeight,
           model: "rundiffusion:130@100",
           numberResults: 1,
           outputType: "base64Data",
@@ -194,7 +203,7 @@ async function processVoiceVideoGeneration(videoId, userId) {
         let audioBuffer;
         try {
           // Attempt Google Cloud TTS
-          audioBuffer = await generateGoogleTTS(scene.voiceoverText, serviceAccountKeyPath);
+          audioBuffer = await generateGoogleTTS(scene.voiceoverText, serviceAccountKeyPath, voiceName);
         } catch (ttsErr) {
           console.warn(`[Worker] Google Cloud TTS failed, trying Translate TTS fallback: ${ttsErr.message}`);
           // Fallback to translate TTS
@@ -242,7 +251,7 @@ async function processVoiceVideoGeneration(videoId, userId) {
 
       // Render clip with pan effect
       console.log(`[Worker] Rendering scene ${scene.sceneIndex} video clip with pan effect...`);
-      await renderSceneVideo(localImagePath, localAudioPath, localVideoPath, audioDuration, scene.sceneIndex);
+      await renderSceneVideo(localImagePath, localAudioPath, localVideoPath, audioDuration, scene.sceneIndex, aspectRatio);
       sceneVideoPaths.push(localVideoPath);
     }
 
@@ -303,13 +312,15 @@ async function processVoiceVideoGeneration(videoId, userId) {
 /**
  * Synthesizes audio using GCP Text-to-Speech API
  */
-async function generateGoogleTTS(text, serviceAccountKeyPath) {
+async function generateGoogleTTS(text, serviceAccountKeyPath, voiceName = 'en-US-Wavenet-D') {
   const auth = new GoogleAuth({
     keyFile: serviceAccountKeyPath,
     scopes: ['https://www.googleapis.com/auth/cloud-platform'],
   });
   const client = await auth.getClient();
   const token = (await client.getAccessToken()).token;
+
+  const languageCode = voiceName.substring(0, 5);
 
   const endpoint = 'https://texttospeech.googleapis.com/v1/text:synthesize';
   const response = await nodeFetch(endpoint, {
@@ -320,7 +331,7 @@ async function generateGoogleTTS(text, serviceAccountKeyPath) {
     },
     body: JSON.stringify({
       input: { text },
-      voice: { languageCode: 'en-US', name: 'en-US-Wavenet-D' },
+      voice: { languageCode, name: voiceName },
       audioConfig: { audioEncoding: 'MP3', speakingRate: 1.0 }
     })
   });
@@ -398,16 +409,18 @@ function getAudioDuration(audioPath) {
 /**
  * Compiles a single image + voiceover into a clip with a panning filter
  */
-function renderSceneVideo(imagePath, audioPath, outputPath, duration, sceneIndex) {
+function renderSceneVideo(imagePath, audioPath, outputPath, duration, sceneIndex, aspectRatio = '16:9') {
   return new Promise((resolve, reject) => {
     const safeDuration = Math.max(1, duration);
+    const isVertical = aspectRatio === '9:16';
     
     // Scale and Crop parameters for Pan Effect
-    // Scale slightly larger than target 1280x720 (e.g. 1.15x is 1472x828)
-    const scaleW = 1472;
-    const scaleH = 828;
-    const outW = 1280;
-    const outH = 720;
+    // Landscape: scale to 1472x828, crop to 1280x720 (1.15x larger)
+    // Vertical: scale to 828x1472, crop to 720x1280 (1.15x larger)
+    const outW = isVertical ? 720 : 1280;
+    const outH = isVertical ? 1280 : 720;
+    const scaleW = isVertical ? 828 : 1472;
+    const scaleH = isVertical ? 1472 : 828;
 
     let filter = '';
     // Alternate pan direction based on sceneIndex
