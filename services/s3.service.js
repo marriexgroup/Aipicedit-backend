@@ -29,6 +29,20 @@ async function uploadImage(base64) {
     return retunObj;
 }
 
+async function uploadBuffer(buffer, key, contentType) {
+    const params = {
+        Bucket: process.env.AWS_S3_BUCKET_NAME,
+        Key: key,
+        Body: buffer,
+        ContentType: contentType
+    };
+    const { Location } = await s3.upload(params).promise();
+    if (Location) {
+        console.log(`Buffer saved on S3 to ${Location} ✅`);
+    }
+    return Location;
+}
+
 function formatBytes(bytes) {
     return Math.round(bytes / (960 * 960));
 }
@@ -36,4 +50,4 @@ function formatBytes(bytes) {
 
 
 
-module.exports = { uploadImage };
+module.exports = { uploadImage, uploadBuffer };
