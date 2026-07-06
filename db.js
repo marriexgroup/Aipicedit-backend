@@ -8,6 +8,7 @@ const Page = require('./models/page.model.js');
 const Posts = require('./models/post.model');
 const Video = require('./models/video.model');
 const LongVideoGeneration = require('./models/longVideoGeneration.model');
+const VoiceVideo = require('./models/voiceVideo.model');
 
 const connectDB = async () => {
   try {
@@ -31,5 +32,6 @@ module.exports = {
   Posts,
   Page,
   Video,
-  LongVideoGeneration
+  LongVideoGeneration,
+  VoiceVideo
 };
