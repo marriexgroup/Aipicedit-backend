@@ -31,6 +31,15 @@ const VoiceVideoSchema = new mongoose.Schema({
   videoUrl: {
     type: String,
   },
+  aspectRatio: {
+    type: String,
+    enum: ['16:9', '9:16'],
+    default: '16:9',
+  },
+  voiceName: {
+    type: String,
+    default: 'en-US-Wavenet-D',
+  },
   errorMessage: {
     type: String,
   },
