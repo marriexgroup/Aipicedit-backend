@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const nodeFetch = require('node-fetch');
 const { GoogleAuth } = require('google-auth-library');
 const { GoogleGenAI } = require('@google/genai');
@@ -9,7 +10,14 @@ const ffmpegStatic = require('ffmpeg-static');
 const { VoiceVideo, User } = require('../db');
 const { uploadBuffer } = require('../services/s3.service');
 
-// Configure ffmpeg path
+// Configure ffmpeg path and make it executable on serverless environments
+try {
+  if (fs.existsSync(ffmpegStatic)) {
+    fs.chmodSync(ffmpegStatic, 0o755);
+  }
+} catch (e) {
+  console.warn("Chmod on ffmpeg failed, might be read-only filesystem or already executable:", e.message);
+}
 ffmpeg.setFfmpegPath(ffmpegStatic);
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
@@ -226,8 +234,8 @@ async function processVoiceVideoGeneration(videoId, userId) {
     job.status = 'video_merging';
     await job.save();
 
-    // Create a local temp directory for processing files
-    tempJobDir = path.join(__dirname, `../temp/voice-video-job-${videoId}`);
+    // Create a local temp directory for processing files (compatible with Vercel/serverless /tmp)
+    tempJobDir = path.join(os.tmpdir(), `voice-video-job-${videoId}`);
     if (!fs.existsSync(tempJobDir)) {
       fs.mkdirSync(tempJobDir, { recursive: true });
     }
