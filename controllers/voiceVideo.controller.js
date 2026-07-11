@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { exec } = require('child_process');
 const nodeFetch = require('node-fetch');
 const { GoogleAuth } = require('google-auth-library');
 const { GoogleGenAI } = require('@google/genai');
@@ -45,7 +46,8 @@ You MUST return a JSON object with this exact structure:
     ...
   ]
 }
-Make sure all numbers are spelled out in the voiceover text (e.g. "one point three billion" instead of "1.3 billion") so they are read correctly by the text-to-speech engine. Do not add any backticks, markdown code blocks, or text outside the JSON object.`;
+Make sure all numbers are spelled out in the voiceover text (e.g. "one point three billion" instead of "1.3 billion") so they are read correctly by the text-to-speech engine. Do not add any backticks, markdown code blocks, or text outside the JSON object.
+CRITICAL: Never include unescaped double quotes inside string fields (like 'imagePrompt' or 'voiceoverText'). Use single quotes (') instead if you need quotation marks. Unescaped double quotes will break the JSON parser.`;
 
 /**
  * Initiates the voice video generation job
@@ -135,7 +137,27 @@ async function processVoiceVideoGeneration(videoId, userId) {
         contents: `Divide this text into scenes:\n\n${job.prompt}`,
         config: {
           systemInstruction: systemPrompt,
-          responseMimeType: "application/json"
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: 'OBJECT',
+            properties: {
+              title: { type: 'STRING' },
+              scenes: {
+                type: 'ARRAY',
+                items: {
+                  type: 'OBJECT',
+                  properties: {
+                    sceneIndex: { type: 'INTEGER' },
+                    imagePrompt: { type: 'STRING' },
+                    voiceoverText: { type: 'STRING' },
+                    duration: { type: 'INTEGER' }
+                  },
+                  required: ['sceneIndex', 'imagePrompt', 'voiceoverText', 'duration']
+                }
+              }
+            },
+            required: ['title', 'scenes']
+          }
         }
       });
       geminiResponse = JSON.parse(response.text);
@@ -209,13 +231,42 @@ async function processVoiceVideoGeneration(videoId, userId) {
       console.log(`[Worker] Generating voice for scene ${i + 1}/${job.scenes.length}: "${scene.voiceoverText.substring(0, 40)}..."`);
       try {
         let audioBuffer;
+
+        // Detect Sinhala script in the voiceover text
+        const isSinhala = /[\u0D80-\u0DFF]/.test(scene.voiceoverText);
+        const resolvedVoiceName = isSinhala ? 'si-LK-Standard-A' : voiceName;
+        const fallbackLang = isSinhala ? 'si' : 'en';
+
         try {
-          // Attempt Google Cloud TTS
-          audioBuffer = await generateGoogleTTS(scene.voiceoverText, serviceAccountKeyPath, voiceName);
+          // Attempt Google Cloud TTS with Service Account
+          audioBuffer = await generateGoogleTTS(scene.voiceoverText, serviceAccountKeyPath, resolvedVoiceName);
         } catch (ttsErr) {
-          console.warn(`[Worker] Google Cloud TTS failed, trying Translate TTS fallback: ${ttsErr.message}`);
-          // Fallback to translate TTS
-          audioBuffer = await generateTranslateTTSFallback(scene.voiceoverText);
+          console.warn(`[Worker] Google Cloud TTS with Service Account failed: ${ttsErr.message}`);
+          try {
+            // Attempt Google Cloud TTS with API Key
+            console.log(`[Worker] Trying Google Cloud TTS with GEMINI_API_KEY...`);
+            audioBuffer = await generateGoogleTTSWithApiKey(scene.voiceoverText, resolvedVoiceName);
+          } catch (apiKeyErr) {
+            console.warn(`[Worker] Google Cloud TTS with API Key failed: ${apiKeyErr.message}`);
+            // Fallback to Translate TTS (female voice by default)
+            const rawBuffer = await generateTranslateTTSFallback(scene.voiceoverText, fallbackLang);
+
+            // Apply pitch shift to Translate TTS to approximate the requested voice (skip for Sinhala)
+            let pitchFactor = 1.0;
+            if (!isSinhala) {
+              if (voiceName === 'en-US-Wavenet-D') pitchFactor = 0.78;
+              else if (voiceName === 'en-US-Journey-D') pitchFactor = 0.82;
+              else if (voiceName === 'en-GB-Wavenet-D') pitchFactor = 0.84;
+              else if (voiceName === 'en-US-Journey-F') pitchFactor = 1.05;
+            }
+
+            if (pitchFactor !== 1.0) {
+              console.log(`[Worker] Pitch-shifting fallback female voice to approximate selected voice (factor: ${pitchFactor})...`);
+              audioBuffer = await pitchShiftAudioBuffer(rawBuffer, pitchFactor);
+            } else {
+              audioBuffer = rawBuffer;
+            }
+          }
         }
 
         // Upload audio to S3
@@ -318,6 +369,39 @@ async function processVoiceVideoGeneration(videoId, userId) {
 }
 
 /**
+ * Synthesizes audio using GCP Text-to-Speech API with API Key
+ */
+async function generateGoogleTTSWithApiKey(text, voiceName = 'en-US-Wavenet-D') {
+  const apiKey = (process.env.GEMINI_API_KEY || '').trim();
+  if (!apiKey) {
+    throw new Error("No GEMINI_API_KEY in environment variables");
+  }
+
+  const languageCode = voiceName.substring(0, 5);
+  const endpoint = `https://texttospeech.googleapis.com/v1/text:synthesize?key=${apiKey}`;
+
+  const response = await nodeFetch(endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      input: { text },
+      voice: { languageCode, name: voiceName },
+      audioConfig: { audioEncoding: 'MP3', speakingRate: 1.0 }
+    })
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error?.message || response.statusText);
+  }
+
+  const data = await response.json();
+  return Buffer.from(data.audioContent, 'base64');
+}
+
+/**
  * Synthesizes audio using GCP Text-to-Speech API
  */
 async function generateGoogleTTS(text, serviceAccountKeyPath, voiceName = 'en-US-Wavenet-D') {
@@ -356,11 +440,11 @@ async function generateGoogleTTS(text, serviceAccountKeyPath, voiceName = 'en-US
 /**
  * Fallback to Google Translate TTS API for free synthesizing
  */
-async function generateTranslateTTSFallback(text) {
+async function generateTranslateTTSFallback(text, languageCode = 'en') {
   const chunks = splitTextIntoChunks(text, 180);
   const buffers = [];
   for (const chunk of chunks) {
-    const url = `https://translate.google.com/translate_tts?ie=UTF-8&tl=en&client=tw-ob&q=${encodeURIComponent(chunk)}`;
+    const url = `https://translate.google.com/translate_tts?ie=UTF-8&tl=${languageCode}&client=tw-ob&q=${encodeURIComponent(chunk)}`;
     const res = await nodeFetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' } });
     if (!res.ok) throw new Error(`Translate TTS failed: ${res.statusText}`);
     buffers.push(await res.buffer());
@@ -538,6 +622,8 @@ async function getVoiceVideoStatus(req, res) {
         progress,
         scenes: voiceVideo.scenes,
         videoUrl: voiceVideo.videoUrl,
+        aspectRatio: voiceVideo.aspectRatio,
+        voiceName: voiceVideo.voiceName,
         errorMessage: voiceVideo.errorMessage,
         createdAt: voiceVideo.createdAt
       }
@@ -574,6 +660,42 @@ async function getAllVoiceVideos(req, res) {
       message: "Failed to retrieve history"
     });
   }
+}
+
+/**
+ * Pitch shifts an audio buffer using static FFmpeg (e.g. to make a female voice sound male)
+ */
+async function pitchShiftAudioBuffer(inputBuffer, pitchFactor = 0.8) {
+  const tempIn = path.join(os.tmpdir(), `pitch-in-${Date.now()}-${Math.random().toString(36).substr(2, 9)}.mp3`);
+  const tempOut = path.join(os.tmpdir(), `pitch-out-${Date.now()}-${Math.random().toString(36).substr(2, 9)}.mp3`);
+
+  fs.writeFileSync(tempIn, inputBuffer);
+
+  const atempo = (1 / pitchFactor).toFixed(2);
+  const targetRate = Math.round(24000 * pitchFactor);
+  const filterString = `aresample=24000,asetrate=${targetRate},atempo=${atempo}`;
+
+  return new Promise((resolve) => {
+    const cmd = `"${ffmpegStatic}" -y -i "${tempIn}" -af "${filterString}" "${tempOut}"`;
+    exec(cmd, (error, stdout, stderr) => {
+      try { fs.unlinkSync(tempIn); } catch (e) {}
+
+      if (error) {
+        console.error("FFmpeg pitch shifting failed:", stderr);
+        try { fs.unlinkSync(tempOut); } catch (e) {}
+        return resolve(inputBuffer); // Fallback to raw buffer
+      }
+
+      try {
+        const outputBuffer = fs.readFileSync(tempOut);
+        fs.unlinkSync(tempOut);
+        resolve(outputBuffer);
+      } catch (readErr) {
+        console.error("Failed to read pitch shifted audio:", readErr.message);
+        resolve(inputBuffer); // Fallback
+      }
+    });
+  });
 }
 
 module.exports = {
