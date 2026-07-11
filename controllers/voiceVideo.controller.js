@@ -254,10 +254,31 @@ async function processVoiceVideoGeneration(videoId, userId) {
             // Apply pitch shift to Translate TTS to approximate the requested voice (skip for Sinhala)
             let pitchFactor = 1.0;
             if (!isSinhala) {
-              if (voiceName === 'en-US-Wavenet-D') pitchFactor = 0.78;
-              else if (voiceName === 'en-US-Journey-D') pitchFactor = 0.82;
-              else if (voiceName === 'en-GB-Wavenet-D') pitchFactor = 0.84;
-              else if (voiceName === 'en-US-Journey-F') pitchFactor = 1.05;
+              const maleVoicesDeep = [
+                'en-us-chirp3-hd-charon',
+                'en-us-neural2-d',
+                'en-us-wavenet-d',
+                'en-gb-wavenet-d'
+              ];
+              const maleVoicesMedium = [
+                'en-us-studio-q',
+                'en-gb-studio-a'
+              ];
+              const maleVoicesLight = [
+                'en-us-chirp3-hd-puck',
+                'en-us-neural2-a',
+                'en-gb-neural2-m',
+                'en-au-neural2-b'
+              ];
+
+              const lowerVoice = voiceName.toLowerCase();
+              if (maleVoicesDeep.some(v => lowerVoice.includes(v))) {
+                pitchFactor = 0.78; // Deep Male
+              } else if (maleVoicesMedium.some(v => lowerVoice.includes(v))) {
+                pitchFactor = 0.81; // Narrator Male
+              } else if (maleVoicesLight.some(v => lowerVoice.includes(v))) {
+                pitchFactor = 0.84; // Light/Clear Male
+              }
             }
 
             if (pitchFactor !== 1.0) {
