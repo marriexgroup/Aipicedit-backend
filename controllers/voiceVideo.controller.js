@@ -234,59 +234,52 @@ async function processVoiceVideoGeneration(videoId, userId) {
 
         // Detect Sinhala script in the voiceover text
         const isSinhala = /[\u0D80-\u0DFF]/.test(scene.voiceoverText);
-        const resolvedVoiceName = isSinhala ? 'si-LK-Standard-A' : voiceName;
         const fallbackLang = isSinhala ? 'si' : 'en';
 
         try {
-          // Attempt Google Cloud TTS with Service Account
-          audioBuffer = await generateGoogleTTS(scene.voiceoverText, serviceAccountKeyPath, resolvedVoiceName);
+          // Attempt Gemini Interactions TTS (New API)
+          console.log(`[Worker] Generating voice using Gemini Interactions API...`);
+          audioBuffer = await generateGoogleTTSWithInteractions(scene.voiceoverText, voiceName);
         } catch (ttsErr) {
-          console.warn(`[Worker] Google Cloud TTS with Service Account failed: ${ttsErr.message}`);
-          try {
-            // Attempt Google Cloud TTS with API Key
-            console.log(`[Worker] Trying Google Cloud TTS with GEMINI_API_KEY...`);
-            audioBuffer = await generateGoogleTTSWithApiKey(scene.voiceoverText, resolvedVoiceName);
-          } catch (apiKeyErr) {
-            console.warn(`[Worker] Google Cloud TTS with API Key failed: ${apiKeyErr.message}`);
-            // Fallback to Translate TTS (female voice by default)
-            const rawBuffer = await generateTranslateTTSFallback(scene.voiceoverText, fallbackLang);
+          console.warn(`[Worker] Gemini Interactions TTS failed, trying Translate fallback: ${ttsErr.message}`);
+          // Fallback to Translate TTS
+          const rawBuffer = await generateTranslateTTSFallback(scene.voiceoverText, fallbackLang);
 
-            // Apply pitch shift to Translate TTS to approximate the requested voice (skip for Sinhala)
-            let pitchFactor = 1.0;
-            if (!isSinhala) {
-              const maleVoicesDeep = [
-                'en-us-chirp3-hd-charon',
-                'en-us-neural2-d',
-                'en-us-wavenet-d',
-                'en-gb-wavenet-d'
-              ];
-              const maleVoicesMedium = [
-                'en-us-studio-q',
-                'en-gb-studio-a'
-              ];
-              const maleVoicesLight = [
-                'en-us-chirp3-hd-puck',
-                'en-us-neural2-a',
-                'en-gb-neural2-m',
-                'en-au-neural2-b'
-              ];
+          // Apply pitch shift to Translate TTS to approximate the requested voice (skip for Sinhala)
+          let pitchFactor = 1.0;
+          if (!isSinhala) {
+            const maleVoicesDeep = [
+              'en-us-chirp3-hd-charon',
+              'en-us-neural2-d',
+              'en-us-wavenet-d',
+              'en-gb-wavenet-d'
+            ];
+            const maleVoicesMedium = [
+              'en-us-studio-q',
+              'en-gb-studio-a'
+            ];
+            const maleVoicesLight = [
+              'en-us-chirp3-hd-puck',
+              'en-us-neural2-a',
+              'en-gb-neural2-m',
+              'en-au-neural2-b'
+            ];
 
-              const lowerVoice = voiceName.toLowerCase();
-              if (maleVoicesDeep.some(v => lowerVoice.includes(v))) {
-                pitchFactor = 0.78; // Deep Male
-              } else if (maleVoicesMedium.some(v => lowerVoice.includes(v))) {
-                pitchFactor = 0.81; // Narrator Male
-              } else if (maleVoicesLight.some(v => lowerVoice.includes(v))) {
-                pitchFactor = 0.84; // Light/Clear Male
-              }
+            const lowerVoice = voiceName.toLowerCase();
+            if (maleVoicesDeep.some(v => lowerVoice.includes(v))) {
+              pitchFactor = 0.78; // Deep Male
+            } else if (maleVoicesMedium.some(v => lowerVoice.includes(v))) {
+              pitchFactor = 0.81; // Narrator Male
+            } else if (maleVoicesLight.some(v => lowerVoice.includes(v))) {
+              pitchFactor = 0.84; // Light/Clear Male
             }
+          }
 
-            if (pitchFactor !== 1.0) {
-              console.log(`[Worker] Pitch-shifting fallback female voice to approximate selected voice (factor: ${pitchFactor})...`);
-              audioBuffer = await pitchShiftAudioBuffer(rawBuffer, pitchFactor);
-            } else {
-              audioBuffer = rawBuffer;
-            }
+          if (pitchFactor !== 1.0) {
+            console.log(`[Worker] Pitch-shifting fallback female voice to approximate selected voice (factor: ${pitchFactor})...`);
+            audioBuffer = await pitchShiftAudioBuffer(rawBuffer, pitchFactor);
+          } else {
+            audioBuffer = rawBuffer;
           }
         }
 
@@ -390,27 +383,65 @@ async function processVoiceVideoGeneration(videoId, userId) {
 }
 
 /**
- * Synthesizes audio using GCP Text-to-Speech API with API Key
+ * Converts raw 24kHz s16le PCM buffer to MP3 format using FFmpeg
  */
-async function generateGoogleTTSWithApiKey(text, voiceName = 'en-US-Wavenet-D') {
+async function convertPcmToMp3Buffer(pcmBuffer) {
+  const tempPcm = path.join(os.tmpdir(), `pcm-in-${Date.now()}-${Math.random().toString(36).substr(2, 9)}.pcm`);
+  const tempMp3 = path.join(os.tmpdir(), `mp3-out-${Date.now()}-${Math.random().toString(36).substr(2, 9)}.mp3`);
+
+  fs.writeFileSync(tempPcm, pcmBuffer);
+
+  return new Promise((resolve, reject) => {
+    const cmd = `"${ffmpegStatic}" -y -f s16le -ar 24000 -ac 1 -i "${tempPcm}" "${tempMp3}"`;
+    exec(cmd, (error, stdout, stderr) => {
+      try { fs.unlinkSync(tempPcm); } catch (e) {}
+
+      if (error) {
+        console.error("FFmpeg PCM transcode failed:", stderr);
+        try { fs.unlinkSync(tempMp3); } catch (e) {}
+        return reject(error);
+      }
+
+      try {
+        const mp3Buffer = fs.readFileSync(tempMp3);
+        fs.unlinkSync(tempMp3);
+        resolve(mp3Buffer);
+      } catch (readErr) {
+        reject(readErr);
+      }
+    });
+  });
+}
+
+/**
+ * Synthesizes audio using Gemini Interactions API (Native TTS capability)
+ */
+async function generateGoogleTTSWithInteractions(text, voiceName = 'Charon') {
   const apiKey = (process.env.GEMINI_API_KEY || '').trim();
   if (!apiKey) {
     throw new Error("No GEMINI_API_KEY in environment variables");
   }
 
-  const languageCode = voiceName.substring(0, 5);
-  const endpoint = `https://texttospeech.googleapis.com/v1/text:synthesize?key=${apiKey}`;
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/interactions?key=${apiKey}`;
+
+  // Build the prompt for Gemini TTS
+  const payload = {
+    model: "gemini-3.1-flash-tts-preview",
+    input: `Read the following narration text aloud. Do not add any introductory or concluding comments, just read the text exactly as written:\n\n"${text}"`,
+    response_format: { type: "audio" },
+    generation_config: {
+      speech_config: [
+        { voice: voiceName }
+      ]
+    }
+  };
 
   const response = await nodeFetch(endpoint, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json'
     },
-    body: JSON.stringify({
-      input: { text },
-      voice: { languageCode, name: voiceName },
-      audioConfig: { audioEncoding: 'MP3', speakingRate: 1.0 }
-    })
+    body: JSON.stringify(payload)
   });
 
   if (!response.ok) {
@@ -419,43 +450,13 @@ async function generateGoogleTTSWithApiKey(text, voiceName = 'en-US-Wavenet-D') 
   }
 
   const data = await response.json();
-  return Buffer.from(data.audioContent, 'base64');
-}
-
-/**
- * Synthesizes audio using GCP Text-to-Speech API
- */
-async function generateGoogleTTS(text, serviceAccountKeyPath, voiceName = 'en-US-Wavenet-D') {
-  const auth = new GoogleAuth({
-    keyFile: serviceAccountKeyPath,
-    scopes: ['https://www.googleapis.com/auth/cloud-platform'],
-  });
-  const client = await auth.getClient();
-  const token = (await client.getAccessToken()).token;
-
-  const languageCode = voiceName.substring(0, 5);
-
-  const endpoint = 'https://texttospeech.googleapis.com/v1/text:synthesize';
-  const response = await nodeFetch(endpoint, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`
-    },
-    body: JSON.stringify({
-      input: { text },
-      voice: { languageCode, name: voiceName },
-      audioConfig: { audioEncoding: 'MP3', speakingRate: 1.0 }
-    })
-  });
-
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    throw new Error(err.error?.message || response.statusText);
+  const audioPart = data.steps?.[0]?.content?.find(part => part.mime_type?.startsWith('audio/'));
+  if (!audioPart || !audioPart.data) {
+    throw new Error("No audio data returned from Gemini Interactions API");
   }
 
-  const data = await response.json();
-  return Buffer.from(data.audioContent, 'base64');
+  const pcmBuffer = Buffer.from(audioPart.data, 'base64');
+  return await convertPcmToMp3Buffer(pcmBuffer);
 }
 
 /**
