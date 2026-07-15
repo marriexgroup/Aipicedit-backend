@@ -40,6 +40,11 @@ const VoiceVideoSchema = new mongoose.Schema({
     type: String,
     default: 'en-US-Wavenet-D',
   },
+  mode: {
+    type: String,
+    enum: ['auto', 'manual'],
+    default: 'auto',
+  },
   errorMessage: {
     type: String,
   },

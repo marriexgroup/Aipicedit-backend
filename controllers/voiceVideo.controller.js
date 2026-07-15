@@ -54,7 +54,7 @@ CRITICAL: Never include unescaped double quotes inside string fields (like 'imag
  */
 async function generateVoiceVideo(req, res) {
   try {
-    const { prompt, userId, aspectRatio = '16:9', voiceName = 'en-US-Wavenet-D' } = req.body;
+    const { prompt, userId, aspectRatio = '16:9', voiceName = 'en-US-Wavenet-D', mode = 'auto' } = req.body;
 
     if (!prompt) {
       return res.status(400).json({
@@ -70,12 +70,45 @@ async function generateVoiceVideo(req, res) {
       });
     }
 
-    // Check user balance (say 15 credits minimum needed)
+    // Strict JSON validation for Manual Mode
+    if (mode === 'manual') {
+      try {
+        const parsed = JSON.parse(prompt);
+        if (!parsed.title || typeof parsed.title !== 'string') {
+          return res.status(400).json({
+            success: false,
+            message: "Invalid manual JSON format. Must contain a string 'title' property."
+          });
+        }
+        if (!parsed.scenes || !Array.isArray(parsed.scenes) || parsed.scenes.length === 0) {
+          return res.status(400).json({
+            success: false,
+            message: "Invalid manual JSON format. Must contain a non-empty array 'scenes' property."
+          });
+        }
+        for (let idx = 0; idx < parsed.scenes.length; idx++) {
+          const scene = parsed.scenes[idx];
+          if (scene.sceneIndex === undefined || !scene.imagePrompt || !scene.voiceoverText) {
+            return res.status(400).json({
+              success: false,
+              message: `Scene at index ${idx} is missing required fields. Each scene must contain 'sceneIndex', 'imagePrompt', and 'voiceoverText'.`
+            });
+          }
+        }
+      } catch (parseErr) {
+        return res.status(400).json({
+          success: false,
+          message: "Failed to parse manual JSON: " + parseErr.message
+        });
+      }
+    }
+
+    // Check user balance (minimum $0.50 required to start generation)
     const user = await User.findById(userId);
-    if (!user || user.accountbalance < 15) {
+    if (!user || user.accountbalance < 0.50) {
       return res.status(400).json({
         success: false,
-        message: "Insufficient account balance. Minimum 15 credits required."
+        message: "Insufficient account balance. Minimum $0.50 balance required."
       });
     }
 
@@ -85,6 +118,7 @@ async function generateVoiceVideo(req, res) {
       prompt,
       aspectRatio,
       voiceName,
+      mode,
       status: 'pending',
     });
     await voiceVideo.save();
@@ -128,45 +162,54 @@ async function processVoiceVideoGeneration(videoId, userId) {
     const aspectRatio = job.aspectRatio || '16:9';
     const voiceName = job.voiceName || 'en-US-Wavenet-D';
 
-    // Step 1: Divide into scenes using Gemini
-    console.log(`[Worker] Step 1: Querying Gemini for scene decomposition...`);
     let geminiResponse;
-    try {
-      const response = await ai.models.generateContent({
-        model: "gemini-3.5-flash",
-        contents: `Divide this text into scenes:\n\n${job.prompt}`,
-        config: {
-          systemInstruction: systemPrompt,
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: 'OBJECT',
-            properties: {
-              title: { type: 'STRING' },
-              scenes: {
-                type: 'ARRAY',
-                items: {
-                  type: 'OBJECT',
-                  properties: {
-                    sceneIndex: { type: 'INTEGER' },
-                    imagePrompt: { type: 'STRING' },
-                    voiceoverText: { type: 'STRING' },
-                    duration: { type: 'INTEGER' }
-                  },
-                  required: ['sceneIndex', 'imagePrompt', 'voiceoverText', 'duration']
-                }
-              }
-            },
-            required: ['title', 'scenes']
-          }
-        }
-      });
-      geminiResponse = JSON.parse(response.text);
-    } catch (err) {
-      let friendlyMessage = err.message;
-      if (err.message.includes("API key not valid") || err.message.includes("API_KEY_INVALID") || err.status === 400) {
-        friendlyMessage = "The GEMINI_API_KEY in your backend .env file is invalid, expired, or inactive. Please update it with a valid API key from Google AI Studio (https://aistudio.google.com/).";
+    if (job.mode === 'manual') {
+      console.log(`[Worker] Bypassing Gemini scene decomposition. Parsing manual JSON...`);
+      try {
+        geminiResponse = JSON.parse(job.prompt);
+      } catch (parseErr) {
+        throw new Error(`Failed to parse manual JSON in worker: ${parseErr.message}`);
       }
-      throw new Error(`Gemini scene generation failed: ${friendlyMessage}`);
+    } else {
+      // Step 1: Divide into scenes using Gemini
+      console.log(`[Worker] Step 1: Querying Gemini for scene decomposition...`);
+      try {
+        const response = await ai.models.generateContent({
+          model: "gemini-3.5-flash",
+          contents: `Divide this text into scenes:\n\n${job.prompt}`,
+          config: {
+            systemInstruction: systemPrompt,
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: 'OBJECT',
+              properties: {
+                title: { type: 'STRING' },
+                scenes: {
+                  type: 'ARRAY',
+                  items: {
+                    type: 'OBJECT',
+                    properties: {
+                      sceneIndex: { type: 'INTEGER' },
+                      imagePrompt: { type: 'STRING' },
+                      voiceoverText: { type: 'STRING' },
+                      duration: { type: 'INTEGER' }
+                    },
+                    required: ['sceneIndex', 'imagePrompt', 'voiceoverText', 'duration']
+                  }
+                }
+              },
+              required: ['title', 'scenes']
+            }
+          }
+        });
+        geminiResponse = JSON.parse(response.text);
+      } catch (err) {
+        let friendlyMessage = err.message;
+        if (err.message.includes("API key not valid") || err.message.includes("API_KEY_INVALID") || err.status === 400) {
+          friendlyMessage = "The GEMINI_API_KEY in your backend .env file is invalid, expired, or inactive. Please update it with a valid API key from Google AI Studio (https://aistudio.google.com/).";
+        }
+        throw new Error(`Gemini scene generation failed: ${friendlyMessage}`);
+      }
     }
 
     console.log(`[Worker] Gemini divided prompt into ${geminiResponse.scenes.length} scenes. Title: ${geminiResponse.title}`);
@@ -343,11 +386,14 @@ async function processVoiceVideoGeneration(videoId, userId) {
     try {
       const user = await User.findById(userId);
       if (user) {
-        // Charge 2 credits per scene
-        const cost = job.scenes.length * 2;
-        user.accountbalance = Math.max(0, user.accountbalance - cost);
+        // Calculate total duration in seconds
+        const totalDuration = job.scenes.reduce((sum, s) => sum + (s.duration || 0), 0);
+        // Cost is $0.01 per second
+        const cost = parseFloat((totalDuration * 0.01).toFixed(2));
+        
+        user.accountbalance = parseFloat(Math.max(0, user.accountbalance - cost).toFixed(2));
         await user.save();
-        console.log(`[Worker] Charged ${cost} credits to user balance. New balance: ${user.accountbalance}`);
+        console.log(`[Worker] Charged $${cost} for ${totalDuration}s video to user balance. New balance: $${user.accountbalance}`);
       }
     } catch (balanceErr) {
       console.error("[Worker] Failed to deduct balance:", balanceErr.message);

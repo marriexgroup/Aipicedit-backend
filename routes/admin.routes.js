@@ -25,6 +25,14 @@ router.get(
   adminController.getUsers
 );
 
+// Admin update user balance route - requires admin authentication
+router.put(
+  '/users/:userId/balance',
+  authMiddleware.authenticateToken,
+  authMiddleware.authorizeRoles(['admin']),
+  adminController.updateUserBalance
+);
+
 // Admin pages route - requires admin authentication
 router.get(
   '/pages',
@@ -47,6 +55,14 @@ router.get(
   authMiddleware.authenticateToken,
   authMiddleware.authorizeRoles(['admin']),
   adminController.getAssignedPosts
+);
+
+// Admin voice videos route - requires admin authentication
+router.get(
+  '/voice-videos',
+  authMiddleware.authenticateToken,
+  authMiddleware.authorizeRoles(['admin']),
+  adminController.getAdminVoiceVideos
 );
 
 module.exports = router;

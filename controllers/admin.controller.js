@@ -1,4 +1,4 @@
-const { User, Generation, Page, Posts } = require('../db');
+const { User, Generation, Page, Posts, VoiceVideo } = require('../db');
 
 // Controller for admin dashboard
 function getDashboard(req, res) {
@@ -169,6 +169,123 @@ async function getAllUsersDetailsPublic(req, res) {
   }
 }
 
+async function updateUserBalance(req, res) {
+  try {
+    const { userId } = req.params;
+    const { balance } = req.body;
+
+    if (balance === undefined || typeof balance !== 'number') {
+      return res.status(400).json({ message: 'balance is required and must be a number' });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    user.accountbalance = balance;
+    if (balance > 0) {
+      user.accounttype = 'paid';
+    }
+    await user.save();
+
+    res.json({
+      success: true,
+      message: 'User balance updated successfully',
+      user: {
+        _id: user._id,
+        username: user.username,
+        accountbalance: user.accountbalance,
+        accounttype: user.accounttype
+      }
+    });
+  } catch (err) {
+    console.error('Error updating user balance:', err);
+    res.status(500).json({ message: 'Failed to update user balance' });
+  }
+}
+
+async function getAdminVoiceVideos(req, res) {
+  try {
+    const { userId, page = 1, limit = 10, rangeType, startDate, endDate } = req.query;
+
+    if (!userId) {
+      return res.status(400).json({
+        success: false,
+        message: "Missing 'userId' query parameter"
+      });
+    }
+
+    const query = {
+      userId,
+      status: 'completed'
+    };
+
+    if (rangeType) {
+      let start, end;
+      const now = new Date();
+      
+      if (rangeType === 'today') {
+        start = new Date(now.setHours(0, 0, 0, 0));
+        end = new Date(now.setHours(23, 59, 59, 999));
+      } else if (rangeType === 'week') {
+        const day = now.getDay();
+        const diff = now.getDate() - day + (day === 0 ? -6 : 1);
+        start = new Date(now.setDate(diff));
+        start.setHours(0, 0, 0, 0);
+        end = new Date();
+        end.setHours(23, 59, 59, 999);
+      } else if (rangeType === 'month') {
+        start = new Date(now.getFullYear(), now.getMonth(), 1);
+        start.setHours(0, 0, 0, 0);
+        end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+        end.setHours(23, 59, 59, 999);
+      } else if (rangeType === 'custom') {
+        if (startDate) {
+          start = new Date(startDate);
+          start.setHours(0, 0, 0, 0);
+        }
+        if (endDate) {
+          end = new Date(endDate);
+          end.setHours(23, 59, 59, 999);
+        }
+      }
+      
+      if (start || end) {
+        query.createdAt = {};
+        if (start) query.createdAt.$gte = start;
+        if (end) query.createdAt.$lte = end;
+      }
+    }
+
+    const pageNum = parseInt(page);
+    const limitNum = parseInt(limit);
+    const skip = (pageNum - 1) * limitNum;
+
+    const total = await VoiceVideo.countDocuments(query);
+    const videos = await VoiceVideo.find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limitNum)
+      .lean();
+
+    res.json({
+      success: true,
+      data: videos,
+      pagination: {
+        total,
+        page: pageNum,
+        limit: limitNum,
+        pages: Math.ceil(total / limitNum)
+      }
+    });
+
+  } catch (err) {
+    console.error('Error fetching admin voice videos:', err);
+    res.status(500).json({ message: 'Failed to fetch voice videos' });
+  }
+}
+
 module.exports = {
   getDashboard,
   getUsers,
@@ -176,4 +293,6 @@ module.exports = {
   assignPage,
   getAssignedPosts,
   getAllUsersDetailsPublic,
+  updateUserBalance,
+  getAdminVoiceVideos,
 };
