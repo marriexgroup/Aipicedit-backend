@@ -25,8 +25,8 @@ async function registerUser(username, password, roleName = 'user') {
       password: hashedPassword,
       role: roleName, // Assign ObjectId of the role
       accounttype: 'trial', // Default value
-      accountbalance: 2.00, // Default value
-      availableStorange:2000,
+      accountbalance: 0, // Default value
+      availableStorange:0,
       usedStorange:0
       // regdate is defaulted by schema
     });
