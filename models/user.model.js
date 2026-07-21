@@ -29,7 +29,14 @@ const UserSchema = new mongoose.Schema({
   timezone: {
     type: String,
     default: 'UTC'
-  }
+  },
+  isVerified: {
+    type: Boolean
+  },
+  verificationToken: String,
+  verificationTokenExpires: Date,
+  resetPasswordToken: String,
+  resetPasswordExpires: Date
 });
 
 // Instance method to update account balance

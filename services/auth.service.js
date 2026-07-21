@@ -16,28 +16,40 @@ const JWT_SECRET = process.env.JWT_SECRET || 'your-default-secret-key';
  * @throws {Error} If username already exists or role not found or other DB error
  */
 async function registerUser(username, password, roleName = 'user') {
+  // Validate email format
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(username)) {
+    const error = new Error('Username must be a valid email address.');
+    error.code = 'INVALID_EMAIL';
+    throw error;
+  }
+
   const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
+
+  // Generate verification token
+  const crypto = require('crypto');
+  const verificationToken = crypto.randomBytes(32).toString('hex');
+  const verificationTokenExpires = Date.now() + 24 * 60 * 60 * 1000; // 24 hours
 
   try {
     // Create and save a new User document
     const newUser = new User({
       username,
       password: hashedPassword,
-      role: roleName, // Assign ObjectId of the role
+      role: roleName,
       accounttype: 'trial', // Default value
       accountbalance: 0, // Default value
-      availableStorange:0,
-      usedStorange:0
-      // regdate is defaulted by schema
+      availableStorange: 0,
+      usedStorange: 0,
+      isVerified: false,
+      verificationToken,
+      verificationTokenExpires
     });
     await newUser.save();
 
-    // Generate JWT token
-    const token = jwt.sign(
-      { userId: newUser._id, username: newUser.username, role: roleName }, // Use roleName directly
-      JWT_SECRET,
-      { expiresIn: '30d' }
-    );
+    // Send verification email
+    const mailService = require('./mail.service');
+    await mailService.sendVerificationEmail(username, username, verificationToken);
 
     // Prepare user object for response (excluding password)
     const userToReturn = {
@@ -47,11 +59,13 @@ async function registerUser(username, password, roleName = 'user') {
       accounttype: newUser.accounttype,
       regdate: newUser.regdate,
       accountbalance: newUser.accountbalance,
-      usedStorange:newUser.usedStorange,
-      availableStorange:newUser.availableStorange
+      usedStorange: newUser.usedStorange,
+      availableStorange: newUser.availableStorange,
+      isVerified: false
     };
 
-    return { user: userToReturn, token };
+    // Do NOT generate token here, user must verify email first
+    return { user: userToReturn };
 
   } catch (dbError) {
     // Check for Mongoose duplicate key error (code 11000)
@@ -80,6 +94,13 @@ async function loginUser(username, password) {
     return null; // User not found
   }
 
+  // Enforce email verification (if isVerified is explicitly false)
+  if (user.isVerified === false) {
+    const error = new Error('Email address is not verified. Please check your inbox or resend the verification link.');
+    error.code = 'EMAIL_NOT_VERIFIED';
+    throw error;
+  }
+
   const isPasswordMatch = await bcrypt.compare(password, user.password);
 
   if (isPasswordMatch) {
@@ -106,8 +127,8 @@ async function loginUser(username, password) {
       accounttype: user.accounttype,
       regdate: user.regdate,
       accountbalance: user.accountbalance,
-      usedStorange:user.usedStorange,
-      availableStorange:user.availableStorange
+      usedStorange: user.usedStorange,
+      availableStorange: user.availableStorange
     };
     return { user: userToReturn, token };
   } else {
@@ -115,7 +136,59 @@ async function loginUser(username, password) {
   }
 }
 
+/**
+ * Initiates the password reset flow.
+ * Generates a reset token, saves it, and sends the reset email.
+ * @param {string} username - The user's email/username
+ */
+async function forgotPassword(username) {
+  const user = await User.findOne({ username });
+  if (!user) {
+    // For security, don't throw an error to prevent user enumeration
+    return { message: 'If the email is registered, a password reset link has been sent.' };
+  }
+
+  const crypto = require('crypto');
+  const token = crypto.randomBytes(32).toString('hex');
+  user.resetPasswordToken = token;
+  user.resetPasswordExpires = Date.now() + 3600000; // 1 hour
+  await user.save();
+
+  const mailService = require('./mail.service');
+  await mailService.sendPasswordResetEmail(user.username, user.username, token);
+
+  return { message: 'If the email is registered, a password reset link has been sent.' };
+}
+
+/**
+ * Resets the user's password using the reset token.
+ * @param {string} token - The password reset token
+ * @param {string} newPassword - The new password
+ */
+async function resetPassword(token, newPassword) {
+  const user = await User.findOne({
+    resetPasswordToken: token,
+    resetPasswordExpires: { $gt: Date.now() }
+  });
+
+  if (!user) {
+    const error = new Error('Password reset token is invalid or has expired.');
+    error.code = 'INVALID_RESET_TOKEN';
+    throw error;
+  }
+
+  // Hash new password
+  user.password = await bcrypt.hash(newPassword, SALT_ROUNDS);
+  user.resetPasswordToken = undefined;
+  user.resetPasswordExpires = undefined;
+  await user.save();
+
+  return { message: 'Password has been reset successfully.' };
+}
+
 module.exports = {
   registerUser,
   loginUser,
+  forgotPassword,
+  resetPassword,
 };
