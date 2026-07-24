@@ -1,179 +1,62 @@
-const checkoutNodeJssdk = require('@paypal/checkout-server-sdk');
 const Payment = require('../models/payment.model');
 const User = require('../models/user.model');
 
-const { PAYPAL_CLIENT_ID, PAYPAL_CLIENT_SECRET, FRONTEND_URL, NODE_ENV, PAYPAL_ENVIRONMENT } = process.env;
-
-// Validate required environment variables
-if (!PAYPAL_CLIENT_ID || !PAYPAL_CLIENT_SECRET) {
-  throw new Error('PayPal credentials not found. Please set PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET environment variables.');
-}
-
-if (!FRONTEND_URL) {
-  throw new Error('FRONTEND_URL environment variable is required for PayPal integration.');
-}
-
-console.log('🔧 PayPal Environment Configuration:');
-console.log('- NODE_ENV:', NODE_ENV);
-console.log('- PAYPAL_ENVIRONMENT:', PAYPAL_ENVIRONMENT);
-console.log('- Client ID exists:', !!PAYPAL_CLIENT_ID);
-
-// Determine environment
-const isProduction = PAYPAL_ENVIRONMENT === 'live' || 
-                    (NODE_ENV === 'production' && PAYPAL_ENVIRONMENT !== 'sandbox');
-
-console.log('- IS_PRODUCTION:', isProduction);
+// Determine fetch implementation (native in Node 18+, fallback to node-fetch if needed)
+const fetchApi = globalThis.fetch || require('node-fetch');
 
 /**
- * Returns PayPal HTTP client instance with environment that has access
- * credentials context. Use this instance to invoke PayPal APIs.
+ * Determine PayPal API Base URL strictly based on PAYPAL_ENVIRONMENT
  */
-function client() {
-  if (isProduction) {
-    console.log('🚀 Using LIVE PayPal environment');
-    return new checkoutNodeJssdk.core.PayPalHttpClient(
-      new checkoutNodeJssdk.core.LiveEnvironment(PAYPAL_CLIENT_ID, PAYPAL_CLIENT_SECRET)
-    );
-  } else {
-    console.log('🧪 Using SANDBOX PayPal environment');
-    return new checkoutNodeJssdk.core.PayPalHttpClient(
-      new checkoutNodeJssdk.core.SandboxEnvironment(PAYPAL_CLIENT_ID, PAYPAL_CLIENT_SECRET)
-    );
-  }
-}
-
-/**
- * Create an order to start the transaction
- */
-const createOrder = async (cart, userId) => {
-  try {
-    const totalAmount = calculateTotalAmount(cart);
-    
-    console.log('💰 Creating order with amount:', totalAmount);
-    console.log('🌐 Frontend URL:', FRONTEND_URL);
-
-    const request = new checkoutNodeJssdk.orders.OrdersCreateRequest();
-    request.prefer("return=minimal");
-    request.requestBody({
-      intent: "CAPTURE",
-      purchase_units: [{
-        amount: {
-          currency_code: "USD",
-          value: totalAmount.toFixed(2)
-        },
-        description: "PostGen Service Payment",
-        custom_id: cart.orderId || `order_${Date.now()}`
-      }],
-      application_context: {
-        return_url: `${FRONTEND_URL}/payment/success`,
-        cancel_url: `${FRONTEND_URL}/payment/cancel`,
-        brand_name: "PostGen",
-        user_action: "PAY_NOW"
-      }
-    });
-
-    const paypalClient = client();
-    const response = await paypalClient.execute(request);
-    
-    console.log('✅ PayPal order created:', response.result.id);
-
-    // Save payment record to database
-    const payment = new Payment({
-      userId,
-      paypalOrderId: response.result.id,
-      amount: totalAmount,
-      currency: 'USD',
-      status: 'pending',
-      cart: cart,
-      metadata: {
-        paypalResponse: response.result
-      }
-    });
-    
-    await payment.save();
-    
-    return {
-      jsonResponse: response.result,
-      httpStatusCode: response.statusCode,
-    };
-  } catch (error) {
-    console.error('❌ PayPal order creation failed:');
-    console.error('- Error:', error.message);
-    console.error('- Stack:', error.stack);
-    
-    if (error.statusCode) {
-      console.error('- Status Code:', error.statusCode);
-      console.error('- Headers:', error.headers);
-      console.error('- Details:', error.details);
-    }
-    
-    throw new Error(`Failed to create order: ${error.message}`);
-  }
+const getBaseUrl = () => {
+  const env = (process.env.PAYPAL_ENVIRONMENT || '').toLowerCase();
+  const isProduction = env === 'live' || env === 'production';
+  return isProduction ? 'https://api-m.paypal.com' : 'https://api-m.sandbox.paypal.com';
 };
 
 /**
- * Capture payment for the created order
+ * Access Token Cache
  */
-const captureOrder = async (orderID) => {
-  try {
-    console.log('🔐 Capturing order:', orderID);
-
-    const request = new checkoutNodeJssdk.orders.OrdersCaptureRequest(orderID);
-    request.prefer("return=minimal");
-
-    const paypalClient = client();
-    const response = await paypalClient.execute(request);
-    
-    console.log('✅ PayPal order captured:', response.result.id);
-
-    // Update payment record in database
-    const payment = await Payment.findByPayPalOrderId(orderID);
-    if (payment) {
-      const capture = response.result.purchase_units[0].payments.captures[0];
-      await payment.completePayment(capture.id, {
-        paypalCaptureResponse: response.result,
-        captureStatus: capture.status,
-        captureTime: capture.create_time
-      });
-      
-      // Increment user's account balance
-      if (capture.status === 'COMPLETED') {
-        try {
-          await User.updateBalanceById(payment.userId, payment.amount, 'add');
-          console.log(`✅ Account balance increased by $${payment.amount} for user ${payment.userId}`);
-        } catch (error) {
-          console.error('❌ Failed to update user account balance:', error);
-        }
-      }
-    }
-    
-    return {
-      jsonResponse: response.result,
-      httpStatusCode: response.statusCode,
-    };
-  } catch (error) {
-    console.error('❌ PayPal order capture failed:', error);
-    throw new Error(`Failed to capture order: ${error.message}`);
-  }
-};
+let cachedAccessToken = null;
+let tokenExpiresAt = 0;
 
 /**
- * Get order details
+ * Generate or return cached OAuth 2.0 access token
  */
-const getOrder = async (orderID) => {
-  try {
-    const request = new checkoutNodeJssdk.orders.OrdersGetRequest(orderID);
-    const paypalClient = client();
-    const response = await paypalClient.execute(request);
-    
-    return {
-      jsonResponse: response.result,
-      httpStatusCode: response.statusCode,
-    };
-  } catch (error) {
-    console.error('❌ Get order failed:', error);
-    throw new Error(`Failed to get order: ${error.message}`);
+const getAccessToken = async () => {
+  const clientId = process.env.PAYPAL_CLIENT_ID;
+  const clientSecret = process.env.PAYPAL_CLIENT_SECRET;
+
+  if (!clientId || !clientSecret) {
+    throw new Error('PayPal credentials missing. Please set PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET environment variables.');
   }
+
+  // Return cached token if valid (with 60-second safety buffer)
+  if (cachedAccessToken && Date.now() < tokenExpiresAt - 60000) {
+    return cachedAccessToken;
+  }
+
+  const baseUrl = getBaseUrl();
+  const auth = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+
+  const response = await fetchApi(`${baseUrl}/v1/oauth2/token`, {
+    method: 'POST',
+    body: 'grant_type=client_credentials',
+    headers: {
+      'Authorization': `Basic ${auth}`,
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+  });
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    console.error('❌ PayPal Access Token Error:', data);
+    throw new Error(data.error_description || data.error || 'Failed to authenticate with PayPal');
+  }
+
+  cachedAccessToken = data.access_token;
+  tokenExpiresAt = Date.now() + (data.expires_in * 1000);
+  return cachedAccessToken;
 };
 
 /**
@@ -192,10 +75,186 @@ const calculateTotalAmount = (cart) => {
 };
 
 /**
+ * Create an order to start the transaction
+ */
+const createOrder = async (cart, userId) => {
+  try {
+    const totalAmount = calculateTotalAmount(cart);
+    if (totalAmount < 1) {
+      throw new Error('Minimum payment amount is $1.00');
+    }
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    
+    console.log('💰 Creating order with amount:', totalAmount);
+    console.log('🌐 Frontend URL:', frontendUrl);
+    console.log('🌐 PayPal Target Base URL:', getBaseUrl());
+
+    const accessToken = await getAccessToken();
+    const baseUrl = getBaseUrl();
+
+    const orderPayload = {
+      intent: 'CAPTURE',
+      purchase_units: [{
+        amount: {
+          currency_code: 'USD',
+          value: totalAmount.toFixed(2)
+        },
+        description: 'PostGen Service Payment',
+        custom_id: cart.orderId || `order_${Date.now()}`
+      }],
+      application_context: {
+        return_url: `${frontendUrl}/payment/success`,
+        cancel_url: `${frontendUrl}/payment/cancel`,
+        brand_name: 'PostGen',
+        user_action: 'PAY_NOW'
+      }
+    };
+
+    const response = await fetchApi(`${baseUrl}/v2/checkout/orders`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${accessToken}`,
+        'Prefer': 'return=representation'
+      },
+      body: JSON.stringify(orderPayload)
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      console.error('❌ PayPal order creation API error response:', data);
+      throw new Error(JSON.stringify(data));
+    }
+
+    console.log('✅ PayPal order created:', data.id);
+
+    // Save payment record to database
+    const payment = new Payment({
+      userId,
+      paypalOrderId: data.id,
+      amount: totalAmount,
+      currency: 'USD',
+      status: 'pending',
+      cart: cart,
+      metadata: {
+        paypalResponse: data
+      }
+    });
+    
+    await payment.save();
+    
+    return {
+      jsonResponse: data,
+      httpStatusCode: response.status,
+    };
+  } catch (error) {
+    console.error('❌ PayPal order creation failed:');
+    console.error('- Error:', error.message);
+    throw new Error(`Failed to create order: ${error.message}`);
+  }
+};
+
+/**
+ * Capture payment for the created order
+ */
+const captureOrder = async (orderID) => {
+  try {
+    console.log('🔐 Capturing order:', orderID);
+
+    const accessToken = await getAccessToken();
+    const baseUrl = getBaseUrl();
+
+    const response = await fetchApi(`${baseUrl}/v2/checkout/orders/${orderID}/capture`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${accessToken}`,
+        'Prefer': 'return=representation'
+      }
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      console.error('❌ PayPal order capture API error response:', data);
+      throw new Error(JSON.stringify(data));
+    }
+
+    console.log('✅ PayPal order captured:', data.id);
+
+    // Update payment record in database
+    const payment = await Payment.findByPayPalOrderId(orderID);
+    if (payment) {
+      const capture = data.purchase_units?.[0]?.payments?.captures?.[0];
+      const captureId = capture ? capture.id : data.id;
+      const captureStatus = capture ? capture.status : data.status;
+      const captureTime = capture ? capture.create_time : new Date().toISOString();
+
+      await payment.completePayment(captureId, {
+        paypalCaptureResponse: data,
+        captureStatus: captureStatus,
+        captureTime: captureTime
+      });
+      
+      // Increment user's account balance
+      if (captureStatus === 'COMPLETED') {
+        try {
+          await User.updateBalanceById(payment.userId, payment.amount, 'add');
+          console.log(`✅ Account balance increased by $${payment.amount} for user ${payment.userId}`);
+        } catch (err) {
+          console.error('❌ Failed to update user account balance:', err);
+        }
+      }
+    }
+    
+    return {
+      jsonResponse: data,
+      httpStatusCode: response.status,
+    };
+  } catch (error) {
+    console.error('❌ PayPal order capture failed:', error);
+    throw new Error(`Failed to capture order: ${error.message}`);
+  }
+};
+
+/**
+ * Get order details
+ */
+const getOrder = async (orderID) => {
+  try {
+    const accessToken = await getAccessToken();
+    const baseUrl = getBaseUrl();
+
+    const response = await fetchApi(`${baseUrl}/v2/checkout/orders/${orderID}`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${accessToken}`
+      }
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(JSON.stringify(data));
+    }
+    
+    return {
+      jsonResponse: data,
+      httpStatusCode: response.status,
+    };
+  } catch (error) {
+    console.error('❌ Get order failed:', error);
+    throw new Error(`Failed to get order: ${error.message}`);
+  }
+};
+
+/**
  * Validate PayPal webhook signature
  */
 const validateWebhook = (headers, body) => {
-  // Implement proper webhook validation in production
+  // Webhook signature validation placeholder
   return true;
 };
 
@@ -205,4 +264,5 @@ module.exports = {
   getOrder,
   calculateTotalAmount,
   validateWebhook,
+  getBaseUrl,
 };

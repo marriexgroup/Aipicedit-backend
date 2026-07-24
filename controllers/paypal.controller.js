@@ -182,9 +182,11 @@ const handleWebhook = async (req, res) => {
  */
 const getConfig = async (req, res) => {
   try {
+    const paypalEnv = (process.env.PAYPAL_ENVIRONMENT || '').toLowerCase();
+    const isLive = paypalEnv === 'live' || paypalEnv === 'production';
     const config = {
       clientId: process.env.PAYPAL_CLIENT_ID,
-      environment: process.env.NODE_ENV === 'production' ? 'live' : 'sandbox',
+      environment: isLive ? 'live' : 'sandbox',
       currency: 'USD',
       intent: 'capture'
     };

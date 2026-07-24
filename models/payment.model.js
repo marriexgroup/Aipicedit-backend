@@ -59,8 +59,6 @@ const paymentSchema = new mongoose.Schema({
 
 // Index for faster queries
 paymentSchema.index({ userId: 1, createdAt: -1 });
-paymentSchema.index({ paypalOrderId: 1 });
-paymentSchema.index({ paypalPaymentId: 1 });
 paymentSchema.index({ status: 1 });
 
 // Update the updatedAt field before saving

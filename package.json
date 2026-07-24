@@ -20,7 +20,6 @@
   "homepage": "https://github.com/SachinthaLakshan/postgen-backend#readme",
   "dependencies": {
     "@google/genai": "^0.12.0",
-    "@paypal/checkout-server-sdk": "^1.0.3",
     "@runware/sdk-js": "^1.1.40",
     "aws-sdk": "^2.1692.0",
     "bcrypt": "^6.0.0",
