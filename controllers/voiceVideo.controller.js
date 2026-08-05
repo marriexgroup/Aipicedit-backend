@@ -273,56 +273,29 @@ async function processVoiceVideoGeneration(videoId, userId) {
       const scene = job.scenes[i];
       console.log(`[Worker] Generating voice for scene ${i + 1}/${job.scenes.length}: "${scene.voiceoverText.substring(0, 40)}..."`);
       try {
+        if (i > 0) {
+          // 2-second spacing delay between scene requests to respect API rate limits
+          console.log(`[Worker] Spacing delay... waiting 2 seconds before next request`);
+          await new Promise(r => setTimeout(r, 2000));
+        }
+
         let audioBuffer;
 
         // Detect Sinhala script in the voiceover text
         const isSinhala = /[\u0D80-\u0DFF]/.test(scene.voiceoverText);
-        const fallbackLang = isSinhala ? 'si' : 'en';
 
-        try {
-          // Attempt Gemini Interactions TTS (New API)
-          console.log(`[Worker] Generating voice using Gemini Interactions API...`);
-          audioBuffer = await generateGoogleTTSWithInteractions(scene.voiceoverText, voiceName);
-        } catch (ttsErr) {
-          console.warn(`[Worker] Gemini Interactions TTS failed, trying Translate fallback: ${ttsErr.message}`);
-          // Fallback to Translate TTS
-          const rawBuffer = await generateTranslateTTSFallback(scene.voiceoverText, fallbackLang);
-
-          // Apply pitch shift to Translate TTS to approximate the requested voice (skip for Sinhala)
-          let pitchFactor = 1.0;
-          if (!isSinhala) {
-            const maleVoicesDeep = [
-              'en-us-chirp3-hd-charon',
-              'en-us-neural2-d',
-              'en-us-wavenet-d',
-              'en-gb-wavenet-d'
-            ];
-            const maleVoicesMedium = [
-              'en-us-studio-q',
-              'en-gb-studio-a'
-            ];
-            const maleVoicesLight = [
-              'en-us-chirp3-hd-puck',
-              'en-us-neural2-a',
-              'en-gb-neural2-m',
-              'en-au-neural2-b'
-            ];
-
-            const lowerVoice = voiceName.toLowerCase();
-            if (maleVoicesDeep.some(v => lowerVoice.includes(v))) {
-              pitchFactor = 0.78; // Deep Male
-            } else if (maleVoicesMedium.some(v => lowerVoice.includes(v))) {
-              pitchFactor = 0.81; // Narrator Male
-            } else if (maleVoicesLight.some(v => lowerVoice.includes(v))) {
-              pitchFactor = 0.84; // Light/Clear Male
-            }
-          }
-
-          if (pitchFactor !== 1.0) {
-            console.log(`[Worker] Pitch-shifting fallback female voice to approximate selected voice (factor: ${pitchFactor})...`);
-            audioBuffer = await pitchShiftAudioBuffer(rawBuffer, pitchFactor);
-          } else {
-            audioBuffer = rawBuffer;
+        if (isSinhala) {
+          // For Sinhala script, use Translate TTS 'si' engine directly as Gemini native TTS does not support Sinhala
+          console.log(`[Worker] Sinhala script detected, using Translate TTS directly...`);
+          audioBuffer = await generateTranslateTTSFallback(scene.voiceoverText, 'si');
+        } else {
+          // For standard English script/selected premium voices, use Gemini Interactions API with retry
+          console.log(`[Worker] Generating premium voice "${voiceName}" using Gemini Interactions API...`);
+          try {
+            audioBuffer = await generateGoogleTTSWithInteractionsWithRetry(scene.voiceoverText, voiceName, 3, 2000);
+          } catch (ttsErr) {
+            console.error(`[Worker] Gemini Interactions TTS failed after retries: ${ttsErr.message}`);
+            throw new Error(`Voice generation failed for scene ${scene.sceneIndex} using selected voice "${voiceName}": ${ttsErr.message}`);
           }
         }
 
@@ -457,6 +430,26 @@ async function convertPcmToMp3Buffer(pcmBuffer) {
       }
     });
   });
+}
+
+/**
+ * Synthesizes audio using Gemini Interactions API with Retry logic and exponential backoff
+ */
+async function generateGoogleTTSWithInteractionsWithRetry(text, voiceName = 'Charon', retries = 3, delay = 2000) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      if (attempt > 1) {
+        console.log(`[Worker] Retrying Gemini Interactions API (attempt ${attempt}/${retries}) after delay...`);
+        await new Promise(r => setTimeout(r, delay * attempt));
+      }
+      return await generateGoogleTTSWithInteractions(text, voiceName);
+    } catch (err) {
+      console.warn(`[Worker] Attempt ${attempt} failed: ${err.message}`);
+      if (attempt === retries) {
+        throw err;
+      }
+    }
+  }
 }
 
 /**
