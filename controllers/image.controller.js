@@ -1,5 +1,5 @@
 const { Runware } = require("@runware/sdk-js");
-const { GoogleGenAI } = require("@google/genai");
+const { getGeminiClient } = require('../services/geminiClient');
 const AWS = require('aws-sdk');
 const { Generation, User } = require("../db");
 const { generateImageOverlay } = require("./imageOverlay.contoller");
@@ -32,7 +32,6 @@ AWS.config.update({
 
 const s3 = new AWS.S3();
 const runware = new Runware({ apiKey: process.env.RUNWARE_API_KEY });
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 const MAX_CONCURRENT_IMAGE_GENERATIONS = 5;
 const IMAGE_GENERATION_TIMEOUT = 60000;
@@ -79,6 +78,7 @@ async function generateImage(req, res) {
     }
 
     const modifiedPrompt = createPrompt(prompt, numberOfFacts);
+    const ai = await getGeminiClient();
     const textResponse = await ai.models.generateContent({
       model: "gemini-3.5-flash",
       contents: modifiedPrompt,
@@ -509,7 +509,7 @@ async function generateImagesNoneTemplate(req, res) {
     
     const imagePromise = limit(async () => {
       // Use gemini service directly without templates/overlays
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      const ai = await getGeminiClient();
       
       const response = await ai.models.generateContent({
         model: "gemini-2.5-flash-image",
@@ -618,7 +618,7 @@ async function generateImageWithPrompt(req, res) {
     
     const imagePromise = limit(async () => {
       // Use Gemini service directly with prompt and uploaded image
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      const ai = await getGeminiClient();
       
       const response = await ai.models.generateContent({
         model: "gemini-2.5-flash-image",

@@ -1,11 +1,10 @@
 const retryHelper = require('./retryHelper');
-const { GoogleGenAI } = require("@google/genai");
-
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const { getGeminiClient } = require('./geminiClient');
 
 async function generatePrompts(basePrompt, numberOfFacts, highlightCount) {
 
   const response = await retryHelper(async () => {
+    const ai = await getGeminiClient();
     const modifiedPrompt = createPrompt(basePrompt, numberOfFacts);
     const textResponse = await ai.models.generateContent({
       model: "gemini-3.5-flash",
@@ -59,6 +58,7 @@ function getRandomWords(text, count) {
 
 async function chatWithAI(message, history = []) {
   const response = await retryHelper(async () => {
+    const ai = await getGeminiClient();
     // Map history to Gemini format
     const contents = history.map(msg => ({
       role: msg.role === 'user' ? 'user' : 'model',

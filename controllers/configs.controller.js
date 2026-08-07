@@ -14,11 +14,15 @@ async function getConfigs(req, res) {
 
 async function addConfigs(req, res) {
   try {
-    const { width, height, imageCostPerRunwareNonPaid, imageCostPerGeminiNonPaid, imageCostPerRunwarePaid, imageCostPerGeminiPaid, videoCostPerSecond } = req.body || {};
+    const { width, height, imageCostPerRunwareNonPaid, imageCostPerGeminiNonPaid, imageCostPerRunwarePaid, imageCostPerGeminiPaid, videoCostPerSecond, activeGeminiKey } = req.body || {};
     if (typeof width !== 'number' || typeof height !== 'number' || width < 1 || height < 1) {
       return res.status(400).json({ message: 'width and height must be positive numbers' });
     }
-    const update = { templateConfigs: { width, height }, pricingConfigs:{imageCostPerRunwareNonPaid, imageCostPerGeminiNonPaid, imageCostPerRunwarePaid, imageCostPerGeminiPaid, videoCostPerSecond} };
+    const update = { 
+      templateConfigs: { width, height }, 
+      pricingConfigs: { imageCostPerRunwareNonPaid, imageCostPerGeminiNonPaid, imageCostPerRunwarePaid, imageCostPerGeminiPaid, videoCostPerSecond },
+      activeGeminiKey: activeGeminiKey !== undefined ? activeGeminiKey : "key1"
+    };
     const doc = await Configs.findOneAndUpdate(
       {},
       update,
@@ -39,7 +43,8 @@ async function updateConfigs(req, res) {
       imageCostPerGeminiNonPaid,
       imageCostPerRunwarePaid,
       imageCostPerGeminiPaid,
-      videoCostPerSecond
+      videoCostPerSecond,
+      activeGeminiKey
     } = req.body || {};
     const current = await Configs.findOne({});
     if (!current) {
@@ -71,7 +76,8 @@ async function updateConfigs(req, res) {
           videoCostPerSecond !== undefined
             ? videoCostPerSecond
             : current.pricingConfigs.videoCostPerSecond
-      }
+      },
+      activeGeminiKey: activeGeminiKey !== undefined ? activeGeminiKey : current.activeGeminiKey
     };
     const doc = await Configs.findOneAndUpdate({}, next, { new: true });
     res.json(doc);

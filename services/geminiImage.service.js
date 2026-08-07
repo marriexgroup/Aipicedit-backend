@@ -1,5 +1,5 @@
-const { GoogleGenAI } = require("@google/genai");
 const retryHelper = require('./retryHelper');
+const { getGeminiClient } = require('./geminiClient');
 const { generateImageOverlay } = require("../controllers/imageOverlay.contoller");
 const { generateImageOverlay02 } = require("./imageOverlays/overlay02.service");
 const { generateImageOverlay03 } = require("./imageOverlays/overlay03.service");
@@ -25,12 +25,12 @@ const { generateImageOverlay22 } = require("./imageOverlays/overlay22.service");
 const { generateImageOverlay23 } = require("./imageOverlays/overlay23.service");
 const { generateImageOverlay24 } = require("./imageOverlays/overlay24.service");
 const { generateImageOverlay25 } = require("./imageOverlays/overlay25.service");
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 async function generateImage(fact, pageName, colors, noTextOverlay, templateNo, templateSelectMode, includePageProfileImage, pageProfileImageUrl, enhancedPrompt) {
   const prompt = `Description: ${fact.description} Fact:${fact.fact}, Generate an image based on this description and fact with hyper-realistic natural look (9:16 aspect ratio). consider  consider ${enhancedPrompt}`;
 
   const response = await retryHelper(async () => {
+    const ai = await getGeminiClient();
     const generatedImage = await ai.models.generateContent({
       model: "gemini-2.5-flash-image",
       contents: [prompt],

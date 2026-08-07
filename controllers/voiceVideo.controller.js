@@ -4,7 +4,7 @@ const os = require('os');
 const { exec } = require('child_process');
 const nodeFetch = require('node-fetch');
 const { GoogleAuth } = require('google-auth-library');
-const { GoogleGenAI } = require('@google/genai');
+const { getGeminiClient, getGeminiApiKey } = require('../services/geminiClient');
 const { Runware } = require('@runware/sdk-js');
 const ffmpeg = require('fluent-ffmpeg');
 const ffmpegStatic = require('ffmpeg-static');
@@ -21,7 +21,6 @@ try {
 }
 ffmpeg.setFfmpegPath(ffmpegStatic);
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 const runware = new Runware({ apiKey: process.env.RUNWARE_API_KEY });
 const serviceAccountKeyPath = path.resolve(__dirname, '../secrets/veo-service-account-key.json');
 
@@ -174,6 +173,7 @@ async function processVoiceVideoGeneration(videoId, userId) {
       // Step 1: Divide into scenes using Gemini
       console.log(`[Worker] Step 1: Querying Gemini for scene decomposition...`);
       try {
+        const ai = await getGeminiClient();
         const response = await ai.models.generateContent({
           model: "gemini-3.5-flash",
           contents: `Divide this text into scenes:\n\n${job.prompt}`,
@@ -456,9 +456,9 @@ async function generateGoogleTTSWithInteractionsWithRetry(text, voiceName = 'Cha
  * Synthesizes audio using Gemini Interactions API (Native TTS capability)
  */
 async function generateGoogleTTSWithInteractions(text, voiceName = 'Charon') {
-  const apiKey = (process.env.GEMINI_API_KEY || '').trim();
+  const apiKey = await getGeminiApiKey();
   if (!apiKey) {
-    throw new Error("No GEMINI_API_KEY in environment variables");
+    throw new Error("No Gemini API key available in configurations or environment variables");
   }
 
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/interactions?key=${apiKey}`;

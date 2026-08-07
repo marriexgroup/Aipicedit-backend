@@ -1,10 +1,8 @@
 const Veo2Client = require('./veo2-client');
 const path = require('path');
-const { GoogleGenAI } = require("@google/genai");
+const { getGeminiClient } = require('../services/geminiClient');
 const { Generation, User } = require('../db');
 const configsModel = require('../models/configs.model');
-
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 // Load environment variables (using dotenv if needed)
 require('dotenv').config();
@@ -37,6 +35,7 @@ async function generateVideo(req, res) {
 
         var textResponse = { text: text_prompt };
         if (auto) {
+            const ai = await getGeminiClient();
             textResponse = await ai.models.generateContent({
                 model: "gemini-3.5-flash",
                 contents: modifiedPrompt,
