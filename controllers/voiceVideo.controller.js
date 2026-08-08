@@ -281,22 +281,13 @@ async function processVoiceVideoGeneration(videoId, userId) {
 
         let audioBuffer;
 
-        // Detect Sinhala script in the voiceover text
-        const isSinhala = /[\u0D80-\u0DFF]/.test(scene.voiceoverText);
-
-        if (isSinhala) {
-          // For Sinhala script, use Translate TTS 'si' engine directly as Gemini native TTS does not support Sinhala
-          console.log(`[Worker] Sinhala script detected, using Translate TTS directly...`);
-          audioBuffer = await generateTranslateTTSFallback(scene.voiceoverText, 'si');
-        } else {
-          // For standard English script/selected premium voices, use Gemini Interactions API with retry
-          console.log(`[Worker] Generating premium voice "${voiceName}" using Gemini Interactions API...`);
-          try {
-            audioBuffer = await generateGoogleTTSWithInteractionsWithRetry(scene.voiceoverText, voiceName, 3, 2000);
-          } catch (ttsErr) {
-            console.error(`[Worker] Gemini Interactions TTS failed after retries: ${ttsErr.message}`);
-            throw new Error(`Voice generation failed for scene ${scene.sceneIndex} using selected voice "${voiceName}": ${ttsErr.message}`);
-          }
+        // Use Gemini Interactions API with retry for all language scripts
+        console.log(`[Worker] Generating premium voice "${voiceName}" using Gemini Interactions API...`);
+        try {
+          audioBuffer = await generateGoogleTTSWithInteractionsWithRetry(scene.voiceoverText, voiceName, 3, 2000);
+        } catch (ttsErr) {
+          console.error(`[Worker] Gemini Interactions TTS failed after retries: ${ttsErr.message}`);
+          throw new Error(`Voice generation failed for scene ${scene.sceneIndex} using selected voice "${voiceName}": ${ttsErr.message}`);
         }
 
         // Upload audio to S3
