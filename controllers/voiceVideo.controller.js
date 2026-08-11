@@ -30,7 +30,7 @@ const systemPrompt = `You are a professional video script writer and storyboardi
 Your task is to take a story or script text and divide it into sequential scenes for a video.
 For each scene, you must generate:
 1. "imagePrompt": A highly detailed and descriptive text-to-image prompt (for Stable Diffusion/Runware). This prompt must describe the visual elements, mood, color palette, and cinematic lighting, but must not contain text or instructional words.
-2. "voiceoverText": The exact narration script corresponding to this part of the story. The voiceover text across all scenes must cover the entire input text completely, without omitting details. Keep each voiceover segment under 35 words.
+2. "voiceoverText": The exact narration script corresponding to this part of the story. The combined voiceover text across all scenes MUST match the user's input script EXACTLY word-for-word, without omitting, summarizing, paraphrasing, or changing any words. Keep each voiceover segment under 35 words.
 3. "duration": Estimated duration in seconds needed to speak the voiceover at a normal pace (~2 to 2.5 words per second). Ensure the duration is between 4 and 12 seconds.
 
 You MUST return a JSON object with this exact structure:
@@ -47,7 +47,8 @@ You MUST return a JSON object with this exact structure:
   ]
 }
 Make sure all numbers are spelled out in the voiceover text (e.g. "one point three billion" instead of "1.3 billion") so they are read correctly by the text-to-speech engine. Do not add any backticks, markdown code blocks, or text outside the JSON object.
-CRITICAL: Never include unescaped double quotes inside string fields (like 'imagePrompt' or 'voiceoverText'). Use single quotes (') instead if you need quotation marks. Unescaped double quotes will break the JSON parser.`;
+CRITICAL: Never include unescaped double quotes inside string fields (like 'imagePrompt' or 'voiceoverText'). Use single quotes (') instead if you need quotation marks. Unescaped double quotes will break the JSON parser.
+CRITICAL: You must NEVER place a scene transition (cut) in the middle of a spoken sentence or phrase. Every scene transition must only occur at the end of a complete sentence or during a natural pause. Never split a single continuous sentence or phrase across two different scenes.`;
 
 /**
  * Initiates the voice video generation job
@@ -795,7 +796,12 @@ function estimateWordTimestamps(text, totalDuration) {
     const word = words[i];
     const wordDuration = (charCounts[i] / totalChars) * activeDuration;
     const start = currentStart;
-    const end = start + wordDuration;
+    
+    // Ensure the last word of every sentence extends to the end of the scene duration so it remains visible and is not truncated early
+    let end = start + wordDuration;
+    if (i === words.length - 1) {
+      end = totalDuration;
+    }
 
     wordTimestamps.push({
       word,
@@ -819,14 +825,6 @@ function generateAssContent(text, duration, aspectRatio = '16:9') {
 
   const wordTimestamps = estimateWordTimestamps(text, duration);
   
-  // Decide group size based on aspect ratio
-  const maxWordsPerLine = aspectRatio === '9:16' ? 4 : 6;
-  
-  const wordGroups = [];
-  for (let i = 0; i < words.length; i += maxWordsPerLine) {
-    wordGroups.push(wordTimestamps.slice(i, i + maxWordsPerLine));
-  }
-
   const playResX = aspectRatio === '9:16' ? 720 : 1280;
   const playResY = aspectRatio === '9:16' ? 1280 : 720;
   const fontSize = aspectRatio === '9:16' ? 55 : 41;
@@ -838,6 +836,35 @@ function generateAssContent(text, duration, aspectRatio = '16:9') {
   const ctx = canvas.getContext('2d');
   ctx.font = `bold ${fontSize}px Arial`;
   const spaceWidth = ctx.measureText(' ').width;
+
+  // Measure all words first
+  wordTimestamps.forEach((w) => {
+    w.width = ctx.measureText(w.word).width;
+  });
+
+  // Dynamically group words into lines based on cumulative pixel width to prevent overflow
+  // 9:16 has 720px width, so we limit text to 624px (leaves 48px margin on each side)
+  // 16:9 has 1280px width, so we limit text to 1120px (leaves 80px margin on each side)
+  const maxLineWidth = playResX - (aspectRatio === '9:16' ? 96 : 160);
+  const wordGroups = [];
+  let currentGroup = [];
+  let currentGroupWidth = 0;
+
+  for (const w of wordTimestamps) {
+    const wordWidthWithSpace = w.width + (currentGroup.length > 0 ? spaceWidth : 0);
+    
+    if (currentGroup.length > 0 && currentGroupWidth + wordWidthWithSpace > maxLineWidth) {
+      wordGroups.push(currentGroup);
+      currentGroup = [w];
+      currentGroupWidth = w.width;
+    } else {
+      currentGroup.push(w);
+      currentGroupWidth += wordWidthWithSpace;
+    }
+  }
+  if (currentGroup.length > 0) {
+    wordGroups.push(currentGroup);
+  }
 
   let ass = `[Script Info]
 ScriptType: v4.00+
@@ -871,11 +898,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     const groupStartStr = formatTime(group[0].start);
     const groupEndStr = formatTime(group[group.length - 1].end);
 
-    // Measure each word and total width of the line group
-    group.forEach((w) => {
-      w.width = ctx.measureText(w.word).width;
-    });
-    
     const groupWidth = group.reduce((sum, w) => sum + w.width, 0) + (group.length - 1) * spaceWidth;
     const groupStartX = (playResX - groupWidth) / 2;
 
