@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { exec } = require('child_process');
+const { createCanvas } = require('canvas');
 const nodeFetch = require('node-fetch');
 const { GoogleAuth } = require('google-auth-library');
 const { getGeminiClient, getGeminiApiKey } = require('../services/geminiClient');
@@ -329,9 +330,23 @@ async function processVoiceVideoGeneration(videoId, userId) {
       scene.duration = Math.ceil(audioDuration);
       console.log(`[Worker] Scene ${scene.sceneIndex} precise audio duration: ${audioDuration}s`);
 
-      // Render clip with pan effect
-      console.log(`[Worker] Rendering scene ${scene.sceneIndex} video clip with pan effect...`);
-      await renderSceneVideo(localImagePath, localAudioPath, localVideoPath, audioDuration, scene.sceneIndex, aspectRatio);
+      // Detect if text contains Sinhala script (no captions for Sinhala voiceovers)
+      const isSinhala = /[\u0D80-\u0DFF]/.test(scene.voiceoverText);
+
+      if (isSinhala) {
+        console.log(`[Worker] Sinhala script detected for scene ${scene.sceneIndex}. Skipping caption overlays...`);
+        // Render clip with pan effect, but no captions
+        await renderSceneVideo(localImagePath, localAudioPath, null, localVideoPath, audioDuration, scene.sceneIndex, aspectRatio);
+      } else {
+        // Generate caption subtitle file (.ass)
+        const localAssPath = path.join(tempJobDir, `scene-${scene.sceneIndex}-caption.ass`);
+        const assContent = generateAssContent(scene.voiceoverText, audioDuration, aspectRatio);
+        fs.writeFileSync(localAssPath, assContent, 'utf8');
+
+        // Render clip with pan effect and captions
+        console.log(`[Worker] Rendering scene ${scene.sceneIndex} video clip with pan effect and captions...`);
+        await renderSceneVideo(localImagePath, localAudioPath, localAssPath, localVideoPath, audioDuration, scene.sceneIndex, aspectRatio);
+      }
       sceneVideoPaths.push(localVideoPath);
     }
 
@@ -551,9 +566,9 @@ function getAudioDuration(audioPath) {
 }
 
 /**
- * Compiles a single image + voiceover into a clip with a panning filter
+ * Compiles a single image + voiceover into a clip with a panning filter and burned-in dynamic captions
  */
-function renderSceneVideo(imagePath, audioPath, outputPath, duration, sceneIndex, aspectRatio = '16:9') {
+function renderSceneVideo(imagePath, audioPath, assPath, outputPath, duration, sceneIndex, aspectRatio = '16:9') {
   return new Promise((resolve, reject) => {
     const safeDuration = Math.max(1, duration);
     const isVertical = aspectRatio === '9:16';
@@ -580,6 +595,13 @@ function renderSceneVideo(imagePath, audioPath, outputPath, duration, sceneIndex
     } else {
       // Pan bottom to top
       filter = `scale=${scaleW}:${scaleH},crop=${outW}:${outH}:(iw-${outW})/2:(ih-${outH})*(1-t/${safeDuration})`;
+    }
+
+    // Escape backslashes and colons in the subtitle path for Windows/Unix compatibility in FFmpeg (if provided)
+    if (assPath) {
+      const escapedAssPath = assPath.replace(/\\/g, '/').replace(/:/g, '\\:');
+      // Append subtitles filter to the scale/crop chain
+      filter += `,subtitles='${escapedAssPath}'`;
     }
 
     ffmpeg()
@@ -748,6 +770,163 @@ async function pitchShiftAudioBuffer(inputBuffer, pitchFactor = 0.8) {
       }
     });
   });
+}
+
+/**
+ * Estimates precise timestamps for each word in a script sentence based on character lengths,
+ * spread evenly across the actual generated scene audio duration.
+ */
+function estimateWordTimestamps(text, totalDuration) {
+  const words = text.split(/\s+/).filter(Boolean);
+  if (words.length === 0) return [];
+
+  const charCounts = words.map(w => w.length);
+  const totalChars = charCounts.reduce((sum, len) => sum + len, 0);
+
+  let currentStart = 0;
+  const wordTimestamps = [];
+  
+  // Set aside 5% of time for pauses between words
+  const pauseRatio = 0.05;
+  const activeDuration = totalDuration * (1 - pauseRatio);
+  const pauseTime = (totalDuration * pauseRatio) / Math.max(1, words.length - 1);
+
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i];
+    const wordDuration = (charCounts[i] / totalChars) * activeDuration;
+    const start = currentStart;
+    const end = start + wordDuration;
+
+    wordTimestamps.push({
+      word,
+      start: parseFloat(start.toFixed(3)),
+      end: parseFloat(end.toFixed(3))
+    });
+
+    currentStart = end + pauseTime;
+  }
+  return wordTimestamps;
+}
+
+/**
+ * Generates an Advanced Substation Alpha (.ass) file structure using Node-Canvas to measure
+ * word widths. It outputs a rounded dark container box background at the bottom center and 
+ * draws a curved yellow box (5px radius) behind the currently active word with black text.
+ */
+function generateAssContent(text, duration, aspectRatio = '16:9') {
+  const words = text.split(/\s+/).filter(Boolean);
+  if (words.length === 0) return '';
+
+  const wordTimestamps = estimateWordTimestamps(text, duration);
+  
+  // Decide group size based on aspect ratio
+  const maxWordsPerLine = aspectRatio === '9:16' ? 4 : 6;
+  
+  const wordGroups = [];
+  for (let i = 0; i < words.length; i += maxWordsPerLine) {
+    wordGroups.push(wordTimestamps.slice(i, i + maxWordsPerLine));
+  }
+
+  const playResX = aspectRatio === '9:16' ? 720 : 1280;
+  const playResY = aspectRatio === '9:16' ? 1280 : 720;
+  const fontSize = aspectRatio === '9:16' ? 32 : 28;
+  const marginV = aspectRatio === '9:16' ? 240 : 80;
+  const Y_text = playResY - marginV;
+
+  // Use canvas to measure word widths exactly
+  const canvas = createCanvas(1280, 720);
+  const ctx = canvas.getContext('2d');
+  ctx.font = `bold ${fontSize}px Arial`;
+  const spaceWidth = ctx.measureText(' ').width;
+
+  let ass = `[Script Info]
+ScriptType: v4.00+
+PlayResX: ${playResX}
+PlayResY: ${playResY}
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,${fontSize},&H00FFFFFF,&H0000FFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,0,0,8,0,0,0,1
+Style: BoxStyle,Arial,${fontSize},&H0000E5FF&,&H0000FFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1
+Style: DarkBoxStyle,Arial,${fontSize},&H001F1F1F&,&H0000FFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+`;
+
+  function formatTime(seconds) {
+    const hrs = Math.floor(seconds / 3600);
+    const mins = Math.floor((seconds % 3600) / 60);
+    const secs = Math.floor(seconds % 60);
+    const centiseconds = Math.floor((seconds % 1) * 100);
+    return `${hrs}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${centiseconds.toString().padStart(2, '0')}`;
+  }
+
+  // Draw 5px rounded rectangle vector path
+  function drawRoundedRectPath(w, h, r = 5) {
+    return `m ${r} 0 l ${w - r} 0 b ${w - r} 0 ${w} 0 ${w} ${r} l ${w} ${h - r} b ${w} ${h - r} ${w} ${h} ${w - r} ${h} l ${r} ${h} b ${r} ${h} 0 ${h} 0 ${h - r} l 0 ${r} b 0 ${r} 0 0 ${r} 0`;
+  }
+
+  for (const group of wordGroups) {
+    const groupStartStr = formatTime(group[0].start);
+    const groupEndStr = formatTime(group[group.length - 1].end);
+
+    // Measure each word and total width of the line group
+    group.forEach((w) => {
+      w.width = ctx.measureText(w.word).width;
+    });
+    
+    const groupWidth = group.reduce((sum, w) => sum + w.width, 0) + (group.length - 1) * spaceWidth;
+    const groupStartX = (playResX - groupWidth) / 2;
+
+    // Compute absolute X positions for this group
+    let currentX = groupStartX;
+    group.forEach((w) => {
+      w.startX = currentX;
+      w.centerX = currentX + w.width / 2;
+      currentX += w.width + spaceWidth;
+    });
+
+    // 1. Draw Main Dark Container Box behind the entire group
+    const mainBoxW = groupWidth + 32;
+    const mainBoxH = fontSize + 20;
+    const mainBoxPath = drawRoundedRectPath(mainBoxW, mainBoxH, 5);
+    const mainBoxX = groupStartX - 16;
+    const mainBoxY = Y_text - 10;
+    ass += `Dialogue: 0,${groupStartStr},${groupEndStr},DarkBoxStyle,,0,0,0,,{\\pos(${mainBoxX},${mainBoxY})}{\\p1}${mainBoxPath}{\\p0}\n`;
+
+    // 2. Render each word
+    group.forEach((w) => {
+      const wordStartStr = formatTime(w.start);
+      const wordEndStr = formatTime(w.end);
+
+      // INACTIVE STATE: Before active
+      if (w.start > group[0].start) {
+        const inactiveStartStr = formatTime(group[0].start);
+        ass += `Dialogue: 1,${inactiveStartStr},${wordStartStr},Default,,0,0,0,,{\\pos(${w.centerX},${Y_text})}${w.word}\n`;
+      }
+
+      // ACTIVE STATE: Draw yellow box + black text
+      const yellowBoxW = w.width + 16;
+      const yellowBoxH = fontSize + 10;
+      const yellowBoxPath = drawRoundedRectPath(yellowBoxW, yellowBoxH, 5);
+      const yellowBoxX = w.startX - 8;
+      const yellowBoxY = Y_text - 5;
+      
+      // Active Yellow Box background
+      ass += `Dialogue: 2,${wordStartStr},${wordEndStr},BoxStyle,,0,0,0,,{\\pos(${yellowBoxX},${yellowBoxY})}{\\p1}${yellowBoxPath}{\\p0}\n`;
+      // Active Black Text
+      ass += `Dialogue: 3,${wordStartStr},${wordEndStr},Default,,0,0,0,,{\\pos(${w.centerX},${Y_text})}{\\c&H000000&}{\\b1}${w.word}\n`;
+
+      // INACTIVE STATE: After active
+      if (w.end < group[group.length - 1].end) {
+        const inactiveEndStr = formatTime(w.end);
+        ass += `Dialogue: 1,${inactiveEndStr},${groupEndStr},Default,,0,0,0,,{\\pos(${w.centerX},${Y_text})}${w.word}\n`;
+      }
+    });
+  }
+
+  return ass;
 }
 
 module.exports = {
