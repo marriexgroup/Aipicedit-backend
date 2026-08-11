@@ -829,7 +829,7 @@ function generateAssContent(text, duration, aspectRatio = '16:9') {
 
   const playResX = aspectRatio === '9:16' ? 720 : 1280;
   const playResY = aspectRatio === '9:16' ? 1280 : 720;
-  const fontSize = aspectRatio === '9:16' ? 32 : 28;
+  const fontSize = aspectRatio === '9:16' ? 55 : 41;
   const marginV = aspectRatio === '9:16' ? 240 : 80;
   const Y_text = playResY - marginV;
 
