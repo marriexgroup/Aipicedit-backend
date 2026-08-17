@@ -1,4 +1,5 @@
 const { User, Generation, Page, Posts, VoiceVideo } = require('../db');
+const s3Service = require('../services/s3.service');
 
 // Controller for admin dashboard
 function getDashboard(req, res) {
@@ -286,6 +287,20 @@ async function getAdminVoiceVideos(req, res) {
   }
 }
 
+async function clearS3Bucket(req, res) {
+  try {
+    const result = await s3Service.clearBucket();
+    res.json({
+      success: true,
+      message: `Successfully cleared ${result.deletedCount} files from S3 bucket.`,
+      deletedCount: result.deletedCount
+    });
+  } catch (err) {
+    console.error('Error clearing S3 bucket:', err);
+    res.status(500).json({ message: err.message || 'Failed to clear S3 bucket' });
+  }
+}
+
 module.exports = {
   getDashboard,
   getUsers,
@@ -295,4 +310,6 @@ module.exports = {
   getAllUsersDetailsPublic,
   updateUserBalance,
   getAdminVoiceVideos,
+  clearS3Bucket,
 };
+

@@ -47,7 +47,58 @@ function formatBytes(bytes) {
     return Math.round(bytes / (960 * 960));
 }
 
+async function clearBucket() {
+    const Bucket = process.env.AWS_S3_BUCKET_NAME;
+    if (!Bucket) {
+        throw new Error('AWS_S3_BUCKET_NAME is not configured in environment variables');
+    }
 
+    let deletedCount = 0;
 
+    try {
+        while (true) {
+            const data = await s3.listObjectVersions({ Bucket }).promise();
+            const objectsToDelete = [];
 
-module.exports = { uploadImage, uploadBuffer };
+            if (data.Versions && data.Versions.length > 0) {
+                data.Versions.forEach(v => {
+                    objectsToDelete.push({ Key: v.Key, VersionId: v.VersionId });
+                });
+            }
+            if (data.DeleteMarkers && data.DeleteMarkers.length > 0) {
+                data.DeleteMarkers.forEach(dm => {
+                    objectsToDelete.push({ Key: dm.Key, VersionId: dm.VersionId });
+                });
+            }
+
+            if (objectsToDelete.length === 0) break;
+
+            await s3.deleteObjects({
+                Bucket,
+                Delete: { Objects: objectsToDelete, Quiet: true }
+            }).promise();
+
+            deletedCount += objectsToDelete.length;
+            if (!data.IsTruncated) break;
+        }
+    } catch (err) {
+        console.warn('listObjectVersions failed or not allowed, falling back to listObjectsV2:', err.message);
+        while (true) {
+            const data = await s3.listObjectsV2({ Bucket }).promise();
+            if (!data.Contents || data.Contents.length === 0) break;
+
+            const objectsToDelete = data.Contents.map(obj => ({ Key: obj.Key }));
+            await s3.deleteObjects({
+                Bucket,
+                Delete: { Objects: objectsToDelete, Quiet: true }
+            }).promise();
+
+            deletedCount += objectsToDelete.length;
+            if (!data.IsTruncated) break;
+        }
+    }
+
+    return { success: true, deletedCount };
+}
+
+module.exports = { uploadImage, uploadBuffer, clearBucket };

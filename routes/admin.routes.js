@@ -65,4 +65,12 @@ router.get(
   adminController.getAdminVoiceVideos
 );
 
+// Admin clear S3 bucket route - requires admin authentication
+router.post(
+  '/clear-s3',
+  authMiddleware.authenticateToken,
+  authMiddleware.authorizeRoles(['admin']),
+  adminController.clearS3Bucket
+);
+
 module.exports = router;

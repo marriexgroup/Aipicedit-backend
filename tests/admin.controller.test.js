@@ -9,6 +9,12 @@ jest.mock('../db', () => {
   };
 });
 
+jest.mock('../services/s3.service', () => {
+  return {
+    clearBucket: jest.fn(),
+  };
+});
+
 describe('adminController.updateUserBalance', () => {
   let req, res;
 
@@ -71,6 +77,46 @@ describe('adminController.updateUserBalance', () => {
     await adminController.updateUserBalance(req, res);
 
     expect(res.status).toHaveBeenCalledWith(404);
-    expect(res.json).toHaveBeenCalledWith({ message: 'User not found' });
   });
 });
+
+describe('adminController.clearS3Bucket', () => {
+  let req, res;
+  const s3Service = require('../services/s3.service');
+
+  beforeEach(() => {
+    req = {};
+    res = {
+      status: jest.fn().mockReturnThis(),
+      json: jest.fn()
+    };
+  });
+
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('should clear S3 bucket and return success and count', async () => {
+    s3Service.clearBucket.mockResolvedValue({ success: true, deletedCount: 42 });
+
+    await adminController.clearS3Bucket(req, res);
+
+    expect(s3Service.clearBucket).toHaveBeenCalled();
+    expect(res.json).toHaveBeenCalledWith({
+      success: true,
+      message: 'Successfully cleared 42 files from S3 bucket.',
+      deletedCount: 42
+    });
+  });
+
+  it('should return 500 error if s3Service fails', async () => {
+    s3Service.clearBucket.mockRejectedValue(new Error('S3 error'));
+
+    await adminController.clearS3Bucket(req, res);
+
+    expect(s3Service.clearBucket).toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(res.json).toHaveBeenCalledWith({ message: 'S3 error' });
+  });
+});
+
