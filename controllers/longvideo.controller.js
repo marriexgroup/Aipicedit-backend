@@ -379,6 +379,9 @@ async function cancelLongVideo(req, res) {
 async function getAllVideos(req, res) {
     try {
         const { userId } = req.params;
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 20;
+        const skip = (page - 1) * limit;
 
         if (!userId) {
             return res.status(400).json({
@@ -387,9 +390,14 @@ async function getAllVideos(req, res) {
             });
         }
 
-        // Get all videos for the user, sorted by creation date (newest first)
+        // Get total count
+        const total = await Video.countDocuments({ userId });
+
+        // Get videos for the user, sorted by creation date (newest first)
         const videos = await Video.find({ userId })
             .sort({ createdAt: -1 })
+            .skip(skip)
+            .limit(limit)
             .select('_id videoUrls status numberOfVideos createdAt updatedAt');
 
         // Transform the data to match the expected format
@@ -411,7 +419,13 @@ async function getAllVideos(req, res) {
             success: true,
             data: {
                 videos: transformedVideos,
-                total: transformedVideos.length
+                total: total,
+                pagination: {
+                    total,
+                    page,
+                    limit,
+                    pages: Math.ceil(total / limit)
+                }
             }
         });
 

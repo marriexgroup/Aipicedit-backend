@@ -9,8 +9,10 @@ const { getGeminiClient, getGeminiApiKey } = require('../services/geminiClient')
 const { Runware } = require('@runware/sdk-js');
 const ffmpeg = require('fluent-ffmpeg');
 const ffmpegStatic = require('ffmpeg-static');
-const { VoiceVideo, User } = require('../db');
+const { VoiceVideo, User, Generation, Video } = require('../db');
 const { uploadBuffer } = require('../services/s3.service');
+const Page = require('../models/page.model');
+const moment = require('moment-timezone');
 
 // Configure ffmpeg path and make it executable on serverless environments
 try {
@@ -55,7 +57,17 @@ CRITICAL: You must NEVER place a scene transition (cut) in the middle of a spoke
  */
 async function generateVoiceVideo(req, res) {
   try {
-    const { prompt, userId, aspectRatio = '16:9', voiceName = 'en-US-Wavenet-D', mode = 'auto' } = req.body;
+    const { 
+      prompt, 
+      userId, 
+      aspectRatio = '16:9', 
+      voiceName = 'en-US-Wavenet-D', 
+      mode = 'auto',
+      pageId,
+      isScheduled = false,
+      scheduleDate,
+      scheduleTime
+    } = req.body;
 
     if (!prompt) {
       return res.status(400).json({
@@ -113,6 +125,55 @@ async function generateVoiceVideo(req, res) {
       });
     }
 
+    let scheduledDateTime = null;
+    let fbScheduleStatus = 'none';
+
+    if (isScheduled) {
+      if (!pageId) {
+        return res.status(400).json({
+          success: false,
+          message: "Page ID is required for scheduling."
+        });
+      }
+      if (!scheduleDate || !scheduleTime) {
+        return res.status(400).json({
+          success: false,
+          message: "Schedule date and time are required."
+        });
+      }
+      const pageDoc = await Page.findById(pageId);
+      if (!pageDoc) {
+        return res.status(404).json({
+          success: false,
+          message: "Target Page not found."
+        });
+      }
+      const userTimezone = user?.timezone || 'UTC';
+      const scheduledMoment = moment.tz(`${scheduleDate} ${scheduleTime}`, 'YYYY-MM-DD HH:mm', userTimezone);
+      if (!scheduledMoment.isValid()) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid schedule date or time format."
+        });
+      }
+      scheduledDateTime = scheduledMoment.toDate();
+      const unixTimestamp = scheduledMoment.unix();
+      const nowTimestamp = Math.floor(Date.now() / 1000);
+      if (unixTimestamp < nowTimestamp + 900) { // 15 minutes minimum from now
+        return res.status(400).json({
+          success: false,
+          message: "Scheduled time must be at least 15 minutes in the future to allow for video generation."
+        });
+      }
+      if (unixTimestamp > nowTimestamp + (30 * 24 * 3600)) { // 30 days max
+        return res.status(400).json({
+          success: false,
+          message: "Scheduled time cannot be more than 30 days in the future for Facebook Graph API."
+        });
+      }
+      fbScheduleStatus = 'pending';
+    }
+
     // Create record in DB
     const voiceVideo = new VoiceVideo({
       userId,
@@ -121,6 +182,12 @@ async function generateVoiceVideo(req, res) {
       voiceName,
       mode,
       status: 'pending',
+      pageId: isScheduled ? pageId : undefined,
+      isScheduled,
+      scheduleDate: isScheduled ? new Date(scheduleDate) : undefined,
+      scheduleTime: isScheduled ? scheduleTime : undefined,
+      scheduledDateTime,
+      fbScheduleStatus
     });
     await voiceVideo.save();
 
@@ -384,6 +451,71 @@ async function processVoiceVideoGeneration(videoId, userId) {
     job.status = 'completed';
     await job.save();
     console.log(`[Worker] Voice video generation completed successfully! S3 URL: ${finalVideoUrl}`);
+
+    // Check if the video is scheduled for Facebook Page post
+    if (job.isScheduled && job.pageId) {
+      console.log(`[Worker] Video generation completed. Scheduling to Facebook Page...`);
+      try {
+        const pageDoc = await Page.findById(job.pageId);
+        if (!pageDoc) {
+          throw new Error(`Target Facebook page not found for ID: ${job.pageId}`);
+        }
+        
+        const userDoc = await User.findById(userId);
+        const userTimezone = userDoc?.timezone || 'UTC';
+        
+        // Parse date and time in user's localized timezone
+        const dateStr = moment(job.scheduleDate).format('YYYY-MM-DD');
+        const scheduledMoment = moment.tz(`${dateStr} ${job.scheduleTime}`, 'YYYY-MM-DD HH:mm', userTimezone);
+        
+        if (!scheduledMoment.isValid()) {
+          throw new Error('Invalid scheduled date or time stored in job');
+        }
+        
+        const unixTimestamp = scheduledMoment.unix();
+        const nowTimestamp = Math.floor(Date.now() / 1000);
+        
+        // Meta requires scheduled time to be at least 10 minutes in the future.
+        // If compilation took too long and we missed the window, schedule it 15 minutes from now.
+        let finalUnixTimestamp = unixTimestamp;
+        if (finalUnixTimestamp < nowTimestamp + 600) {
+          console.warn(`[Worker] Scheduled time has passed or is less than 10 mins from now due to compilation delay. Adjusting scheduled time to 15 minutes in the future.`);
+          finalUnixTimestamp = nowTimestamp + 900;
+        }
+
+        const fbEndpoint = `https://graph.facebook.com/v21.0/${pageDoc.facebookPageId}/videos`;
+        const fbPayload = {
+          file_url: job.videoUrl,
+          title: job.title || 'AI Generated Video',
+          description: job.prompt || '',
+          published: false,
+          scheduled_publish_time: finalUnixTimestamp,
+          access_token: pageDoc.accessToken
+        };
+
+        const fbResponse = await nodeFetch(fbEndpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(fbPayload)
+        });
+
+        const fbData = await fbResponse.json();
+        if (fbData.error) {
+          console.error("[Worker] Facebook Video API Full Error:", JSON.stringify(fbData.error, null, 2));
+          throw new Error(`Facebook API Error: ${fbData.error.message}`);
+        }
+
+        console.log(`[Worker] Facebook video scheduled successfully. ID: ${fbData.id}`);
+        job.fbPostId = fbData.id;
+        job.fbScheduleStatus = 'scheduled';
+        await job.save();
+      } catch (fbError) {
+        console.error(`[Worker] Failed to schedule video to Facebook: ${fbError.message}`);
+        job.fbScheduleStatus = 'failed';
+        job.errorMessage = (job.errorMessage ? job.errorMessage + "; " : "") + `Facebook Schedule Error: ${fbError.message}`;
+        await job.save();
+      }
+    }
 
   } catch (error) {
     console.error(`[Worker] Job failed: ${error.message}`);
@@ -719,13 +851,25 @@ async function getVoiceVideoStatus(req, res) {
 async function getAllVoiceVideos(req, res) {
   try {
     const userId = req.user.id; // From authMiddleware
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const skip = (page - 1) * limit;
 
+    const total = await VoiceVideo.countDocuments({ userId });
     const history = await VoiceVideo.find({ userId })
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
 
     return res.status(200).json({
       success: true,
-      data: history
+      data: history,
+      pagination: {
+        total,
+        page,
+        limit,
+        pages: Math.ceil(total / limit)
+      }
     });
 
   } catch (error) {
@@ -951,8 +1095,155 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
   return ass;
 }
 
+/**
+ * Schedules an already completed voice video to a Facebook Page
+ */
+async function scheduleCompletedVideo(req, res) {
+  try {
+    const { videoId, pageId, scheduleDate, scheduleTime, caption, title, videoType = 'voice' } = req.body;
+    const userId = req.user?.id || req.body.userId;
+
+    if (!videoId || !pageId || !scheduleDate || !scheduleTime) {
+      return res.status(400).json({
+        success: false,
+        message: "Missing required scheduling fields (videoId, pageId, scheduleDate, scheduleTime)."
+      });
+    }
+
+    let jobUrl = "";
+    let jobTitle = "";
+    let jobDoc = null;
+
+    if (videoType === 'voice') {
+      jobDoc = await VoiceVideo.findById(videoId);
+      if (!jobDoc) {
+        return res.status(404).json({ success: false, message: "Voice video not found." });
+      }
+      if (jobDoc.status !== 'completed' || !jobDoc.videoUrl) {
+        return res.status(400).json({ success: false, message: "Voice video is not compiled." });
+      }
+      jobUrl = jobDoc.videoUrl;
+      jobTitle = jobDoc.title || "Voice Video";
+    } else if (videoType === 'regular') {
+      jobDoc = await Generation.findById(videoId);
+      if (!jobDoc) {
+        return res.status(404).json({ success: false, message: "Regular video not found." });
+      }
+      if (!jobDoc.videoUrl) {
+        return res.status(400).json({ success: false, message: "Regular video has no URL." });
+      }
+      jobUrl = jobDoc.videoUrl;
+      jobTitle = jobDoc.pageName || "Regular Video";
+    } else if (videoType === 'long') {
+      jobDoc = await Video.findById(videoId);
+      if (!jobDoc) {
+        return res.status(404).json({ success: false, message: "Long video not found." });
+      }
+      if (!jobDoc.videoUrls || jobDoc.videoUrls.length === 0) {
+        return res.status(400).json({ success: false, message: "Long video has no compiled parts." });
+      }
+      jobUrl = jobDoc.videoUrls[0];
+      jobTitle = jobDoc.pageName || "Long Video";
+    } else {
+      return res.status(400).json({ success: false, message: "Invalid video type." });
+    }
+
+    const pageDoc = await Page.findById(pageId);
+    if (!pageDoc) {
+      return res.status(404).json({
+        success: false,
+        message: "Facebook Page integration not found."
+      });
+    }
+
+    const userDoc = await User.findById(userId);
+    const userTimezone = userDoc?.timezone || 'UTC';
+
+    const scheduledMoment = moment.tz(`${scheduleDate} ${scheduleTime}`, 'YYYY-MM-DD HH:mm', userTimezone);
+    if (!scheduledMoment.isValid()) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid schedule date or time."
+      });
+    }
+
+    const unixTimestamp = scheduledMoment.unix();
+    const nowTimestamp = Math.floor(Date.now() / 1000);
+
+    if (unixTimestamp < nowTimestamp + 600) {
+      return res.status(400).json({
+        success: false,
+        message: "Scheduled time must be at least 10 minutes in the future for Facebook Graph API."
+      });
+    }
+
+    if (unixTimestamp > nowTimestamp + (30 * 24 * 3600)) {
+      return res.status(400).json({
+        success: false,
+        message: "Scheduled time cannot be more than 30 days in the future for Facebook Graph API."
+      });
+    }
+
+    const fbEndpoint = `https://graph.facebook.com/v21.0/${pageDoc.facebookPageId}/videos`;
+    const fbPayload = {
+      file_url: jobUrl,
+      title: title || jobTitle,
+      description: caption || (videoType === 'voice' ? jobDoc.prompt : ''),
+      published: false,
+      scheduled_publish_time: unixTimestamp,
+      access_token: pageDoc.accessToken
+    };
+
+    const fbResponse = await nodeFetch(fbEndpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(fbPayload)
+    });
+
+    const fbData = await fbResponse.json();
+    if (fbData.error) {
+      console.error("Facebook Video API Full Error:", JSON.stringify(fbData.error, null, 2));
+      return res.status(400).json({
+        success: false,
+        message: `Facebook API Error: ${fbData.error.message}`
+      });
+    }
+
+    // Save scheduled details in the target video document if supported
+    if (videoType === 'voice') {
+      jobDoc.pageId = pageId;
+      jobDoc.isScheduled = true;
+      jobDoc.scheduleDate = new Date(scheduleDate);
+      jobDoc.scheduleTime = scheduleTime;
+      jobDoc.scheduledDateTime = scheduledMoment.toDate();
+      jobDoc.fbPostId = fbData.id;
+      jobDoc.fbScheduleStatus = 'scheduled';
+      await jobDoc.save();
+    } else {
+      console.log(`Video type ${videoType} (ID: ${videoId}) scheduled successfully on FB: ${fbData.id}`);
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Video scheduled successfully on Facebook.",
+      data: {
+        postId: fbData.id
+      }
+    });
+
+  } catch (error) {
+    console.error("Error scheduling completed video:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to schedule completed video.",
+      error: error.message
+    });
+  }
+}
+
 module.exports = {
   generateVoiceVideo,
   getVoiceVideoStatus,
-  getAllVoiceVideos
+  getAllVoiceVideos,
+  scheduleCompletedVideo
 };

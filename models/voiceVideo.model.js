@@ -48,6 +48,36 @@ const VoiceVideoSchema = new mongoose.Schema({
   errorMessage: {
     type: String,
   },
+  pageId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Page',
+    required: false,
+  },
+  isScheduled: {
+    type: Boolean,
+    default: false,
+  },
+  scheduleDate: {
+    type: Date,
+    required: false,
+  },
+  scheduleTime: {
+    type: String,
+    required: false,
+  },
+  scheduledDateTime: {
+    type: Date,
+    required: false,
+  },
+  fbPostId: {
+    type: String,
+    required: false,
+  },
+  fbScheduleStatus: {
+    type: String,
+    enum: ['none', 'pending', 'scheduled', 'failed'],
+    default: 'none',
+  },
 }, {
   timestamps: true,
 });

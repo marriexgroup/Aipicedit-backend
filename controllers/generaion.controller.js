@@ -2,27 +2,51 @@ const { Generation } = require("../db");
 const AWS = require('aws-sdk');
 
 // Controller for admin user management (placeholder)
-function getGenerations(req, res) {
+async function getGenerations(req, res) {
     const { userId } = req.params;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const skip = (page - 1) * limit;
+    const type = req.query.type;
+
     if (!userId) {
         return res.status(400).json({
             error: "User ID is required."
         });
     }
-    Generation.find({ user: userId }).populate('pageId')
-        .then(generations => {
-            res.json({
-                message: 'Generations retrieved successfully.',
-                generations: generations
-            });
-        })
-        .catch(error => {
-            console.error("Error retrieving generations:", error);
-            res.status(500).json({
-                error: "An error occurred while retrieving generations.",
-                details: process.env.NODE_ENV === "development" ? error.message : undefined
-            });
+
+    try {
+        let query = { user: userId };
+        if (type === 'video') {
+            query.isVideo = true;
+        } else if (type === 'image') {
+            query.isVideo = { $ne: true };
+        }
+
+        const total = await Generation.countDocuments(query);
+        const generations = await Generation.find(query)
+            .sort({ generationDate: -1 })
+            .skip(skip)
+            .limit(limit)
+            .populate('pageId');
+
+        res.json({
+            message: 'Generations retrieved successfully.',
+            generations: generations,
+            pagination: {
+                total,
+                page,
+                limit,
+                pages: Math.ceil(total / limit)
+            }
         });
+    } catch (error) {
+        console.error("Error retrieving generations:", error);
+        res.status(500).json({
+            error: "An error occurred while retrieving generations.",
+            details: process.env.NODE_ENV === "development" ? error.message : undefined
+        });
+    }
 }
 
 // Configure AWS (you might want to do this elsewhere in your app)

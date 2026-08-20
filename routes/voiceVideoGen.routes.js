@@ -4,7 +4,8 @@ const { authenticateToken } = require('../auth.middleware');
 const {
   generateVoiceVideo,
   getVoiceVideoStatus,
-  getAllVoiceVideos
+  getAllVoiceVideos,
+  scheduleCompletedVideo
 } = require('../controllers/voiceVideo.controller');
 
 // Generate video based on story text prompt
@@ -15,5 +16,8 @@ router.get('/status/:videoId', authenticateToken, getVoiceVideoStatus);
 
 // Fetch user history
 router.get('/history', authenticateToken, getAllVoiceVideos);
+
+// Schedule a completed video
+router.post('/schedule-video', authenticateToken, scheduleCompletedVideo);
 
 module.exports = router;
