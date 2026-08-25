@@ -5,7 +5,8 @@ const {
   generateVoiceVideo,
   getVoiceVideoStatus,
   getAllVoiceVideos,
-  scheduleCompletedVideo
+  scheduleCompletedVideo,
+  retryVoiceVideo
 } = require('../controllers/voiceVideo.controller');
 
 // Generate video based on story text prompt
@@ -19,5 +20,8 @@ router.get('/history', authenticateToken, getAllVoiceVideos);
 
 // Schedule a completed video
 router.post('/schedule-video', authenticateToken, scheduleCompletedVideo);
+
+// Retry failed video generation from stopped point
+router.post('/retry/:videoId', authenticateToken, retryVoiceVideo);
 
 module.exports = router;

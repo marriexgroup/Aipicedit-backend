@@ -40,6 +40,11 @@ const VoiceVideoSchema = new mongoose.Schema({
     type: String,
     default: 'en-US-Wavenet-D',
   },
+  platform: {
+    type: String,
+    enum: ['none', 'youtube', 'facebook'],
+    default: 'none',
+  },
   mode: {
     type: String,
     enum: ['auto', 'manual'],

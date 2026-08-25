@@ -66,7 +66,8 @@ async function generateVoiceVideo(req, res) {
       pageId,
       isScheduled = false,
       scheduleDate,
-      scheduleTime
+      scheduleTime,
+      platform = 'none'
     } = req.body;
 
     if (!prompt) {
@@ -180,6 +181,7 @@ async function generateVoiceVideo(req, res) {
       prompt,
       aspectRatio,
       voiceName,
+      platform,
       mode,
       status: 'pending',
       pageId: isScheduled ? pageId : undefined,
@@ -231,66 +233,70 @@ async function processVoiceVideoGeneration(videoId, userId) {
     const voiceName = job.voiceName || 'en-US-Wavenet-D';
 
     let geminiResponse;
-    if (job.mode === 'manual') {
-      console.log(`[Worker] Bypassing Gemini scene decomposition. Parsing manual JSON...`);
-      try {
-        geminiResponse = JSON.parse(job.prompt);
-      } catch (parseErr) {
-        throw new Error(`Failed to parse manual JSON in worker: ${parseErr.message}`);
-      }
+    if (job.scenes && job.scenes.length > 0) {
+      console.log(`[Worker] Resuming job. Existing scenes found (${job.scenes.length} scenes). Skipping scene decomposition.`);
     } else {
-      // Step 1: Divide into scenes using Gemini
-      console.log(`[Worker] Step 1: Querying Gemini for scene decomposition...`);
-      try {
-        const ai = await getGeminiClient();
-        const response = await ai.models.generateContent({
-          model: "gemini-3.5-flash",
-          contents: `Divide this text into scenes:\n\n${job.prompt}`,
-          config: {
-            systemInstruction: systemPrompt,
-            responseMimeType: "application/json",
-            responseSchema: {
-              type: 'OBJECT',
-              properties: {
-                title: { type: 'STRING' },
-                scenes: {
-                  type: 'ARRAY',
-                  items: {
-                    type: 'OBJECT',
-                    properties: {
-                      sceneIndex: { type: 'INTEGER' },
-                      imagePrompt: { type: 'STRING' },
-                      voiceoverText: { type: 'STRING' },
-                      duration: { type: 'INTEGER' }
-                    },
-                    required: ['sceneIndex', 'imagePrompt', 'voiceoverText', 'duration']
-                  }
-                }
-              },
-              required: ['title', 'scenes']
-            }
-          }
-        });
-        geminiResponse = JSON.parse(response.text);
-      } catch (err) {
-        let friendlyMessage = err.message;
-        if (err.message.includes("API key not valid") || err.message.includes("API_KEY_INVALID") || err.status === 400) {
-          friendlyMessage = "The GEMINI_API_KEY in your backend .env file is invalid, expired, or inactive. Please update it with a valid API key from Google AI Studio (https://aistudio.google.com/).";
+      if (job.mode === 'manual') {
+        console.log(`[Worker] Bypassing Gemini scene decomposition. Parsing manual JSON...`);
+        try {
+          geminiResponse = JSON.parse(job.prompt);
+        } catch (parseErr) {
+          throw new Error(`Failed to parse manual JSON in worker: ${parseErr.message}`);
         }
-        throw new Error(`Gemini scene generation failed: ${friendlyMessage}`);
+      } else {
+        // Step 1: Divide into scenes using Gemini
+        console.log(`[Worker] Step 1: Querying Gemini for scene decomposition...`);
+        try {
+          const ai = await getGeminiClient();
+          const response = await ai.models.generateContent({
+            model: "gemini-3.5-flash",
+            contents: `Divide this text into scenes:\n\n${job.prompt}`,
+            config: {
+              systemInstruction: systemPrompt,
+              responseMimeType: "application/json",
+              responseSchema: {
+                type: 'OBJECT',
+                properties: {
+                  title: { type: 'STRING' },
+                  scenes: {
+                    type: 'ARRAY',
+                    items: {
+                      type: 'OBJECT',
+                      properties: {
+                        sceneIndex: { type: 'INTEGER' },
+                        imagePrompt: { type: 'STRING' },
+                        voiceoverText: { type: 'STRING' },
+                        duration: { type: 'INTEGER' }
+                      },
+                      required: ['sceneIndex', 'imagePrompt', 'voiceoverText', 'duration']
+                    }
+                  }
+                },
+                required: ['title', 'scenes']
+              }
+            }
+          });
+          geminiResponse = JSON.parse(response.text);
+        } catch (err) {
+          let friendlyMessage = err.message;
+          if (err.message.includes("API key not valid") || err.message.includes("API_KEY_INVALID") || err.status === 400) {
+            friendlyMessage = "The GEMINI_API_KEY in your backend .env file is invalid, expired, or inactive. Please update it with a valid API key from Google AI Studio (https://aistudio.google.com/).";
+          }
+          throw new Error(`Gemini scene generation failed: ${friendlyMessage}`);
+        }
       }
-    }
 
-    console.log(`[Worker] Gemini divided prompt into ${geminiResponse.scenes.length} scenes. Title: ${geminiResponse.title}`);
-    job.title = geminiResponse.title;
-    job.scenes = geminiResponse.scenes.map(s => ({
-      sceneIndex: s.sceneIndex,
-      imagePrompt: s.imagePrompt,
-      voiceoverText: s.voiceoverText,
-      duration: s.duration || 6
-    }));
-    job.status = 'scenes_generated';
-    await job.save();
+      console.log(`[Worker] Gemini divided prompt into ${geminiResponse.scenes.length} scenes. Title: ${geminiResponse.title}`);
+      job.title = geminiResponse.title;
+      job.scenes = geminiResponse.scenes.map(s => ({
+        sceneIndex: s.sceneIndex,
+        imagePrompt: s.imagePrompt,
+        voiceoverText: s.voiceoverText,
+        duration: s.duration || 6
+      }));
+      job.status = 'scenes_generated';
+      await job.save();
+    }
 
     // Step 2: Generate Images via Runware
     console.log(`[Worker] Step 2: Generating images with Runware...`);
@@ -303,6 +309,10 @@ async function processVoiceVideoGeneration(videoId, userId) {
 
     for (let i = 0; i < job.scenes.length; i++) {
       const scene = job.scenes[i];
+      if (scene.imageUrl) {
+        console.log(`[Worker] Image already exists for scene ${scene.sceneIndex}. Skipping generation.`);
+        continue;
+      }
       console.log(`[Worker] Generating image for scene ${i + 1}/${job.scenes.length}: "${scene.imagePrompt.substring(0, 40)}..."`);
       try {
         const generatedImage = await runware.requestImages({
@@ -338,15 +348,21 @@ async function processVoiceVideoGeneration(videoId, userId) {
     job.status = 'voices_generating';
     await job.save();
 
+    let generatedVoiceCount = 0;
     for (let i = 0; i < job.scenes.length; i++) {
       const scene = job.scenes[i];
+      if (scene.audioUrl) {
+        console.log(`[Worker] Voice already exists for scene ${scene.sceneIndex}. Skipping generation.`);
+        continue;
+      }
       console.log(`[Worker] Generating voice for scene ${i + 1}/${job.scenes.length}: "${scene.voiceoverText.substring(0, 40)}..."`);
       try {
-        if (i > 0) {
+        if (generatedVoiceCount > 0) {
           // 2-second spacing delay between scene requests to respect API rate limits
           console.log(`[Worker] Spacing delay... waiting 2 seconds before next request`);
           await new Promise(r => setTimeout(r, 2000));
         }
+        generatedVoiceCount++;
 
         let audioBuffer;
 
@@ -423,9 +439,66 @@ async function processVoiceVideoGeneration(videoId, userId) {
     const finalVideoLocalPath = path.join(tempJobDir, 'final_output.mp4');
     await concatVideos(sceneVideoPaths, finalVideoLocalPath, tempJobDir);
 
+    // Check if we need to overlay platform banner
+    const platform = job.platform || 'none';
+    let processedVideoPath = finalVideoLocalPath;
+
+    if (platform !== 'none') {
+      console.log(`[Worker] Platform specified: ${platform}. Applying dynamic banner overlays...`);
+      try {
+        const bannerFileName = platform === 'youtube' ? 'subscribe_btn.mp4' : 'fb_follow_btn.mp4';
+        const bannerPath = path.join(__dirname, '../assets', bannerFileName);
+
+        if (fs.existsSync(bannerPath)) {
+          const finalVideoDuration = await getAudioDuration(finalVideoLocalPath);
+          const bannerDuration = await getAudioDuration(bannerPath);
+          console.log(`[Worker] Final video duration: ${finalVideoDuration}s, Banner duration: ${bannerDuration}s`);
+
+          const d = bannerDuration;
+
+          // Determine overlay count N dynamically based on video duration to prevent overlap
+          let N = 3;
+          if (finalVideoDuration < d * 1.5) {
+            N = 1;
+          } else if (finalVideoDuration < d * 2.5) {
+            N = 2;
+          }
+
+          // Calculate random non-overlapping timestamps
+          const timestamps = [];
+          for (let i = 0; i < N; i++) {
+            const segmentStart = i * (finalVideoDuration / N);
+            const segmentEnd = (i + 1) * (finalVideoDuration / N);
+            const maxStart = segmentEnd - d;
+            let t_start;
+            if (maxStart > segmentStart) {
+              t_start = segmentStart + Math.random() * (maxStart - segmentStart);
+            } else {
+              t_start = segmentStart + (segmentEnd - segmentStart - d) / 2;
+            }
+            timestamps.push(parseFloat(Math.max(0, t_start).toFixed(3)));
+          }
+
+          console.log(`[Worker] Overlaying banner ${N} times at timestamps: ${timestamps.join(', ')}s`);
+
+          const overlaidVideoPath = path.join(tempJobDir, 'final_output_overlaid.mp4');
+
+          // Apply overlay
+          await applyBannerOverlays(finalVideoLocalPath, bannerPath, overlaidVideoPath, timestamps, d, aspectRatio);
+          
+          processedVideoPath = overlaidVideoPath;
+          console.log(`[Worker] Banner overlays successfully applied to video.`);
+        } else {
+          console.warn(`[Worker] Banner asset not found at path: ${bannerPath}. Skipping banner overlay.`);
+        }
+      } catch (overlayErr) {
+        console.error(`[Worker] Failed to apply banner overlays:`, overlayErr);
+      }
+    }
+
     // Upload final video to S3
     console.log(`[Worker] Uploading final video to S3...`);
-    const finalVideoBuffer = fs.readFileSync(finalVideoLocalPath);
+    const finalVideoBuffer = fs.readFileSync(processedVideoPath);
     const finalS3Key = `voice-video-gen/${videoId}/final-video-${Date.now()}.mp4`;
     const finalVideoUrl = await uploadBuffer(finalVideoBuffer, finalS3Key, 'video/mp4');
 
@@ -831,6 +904,7 @@ async function getVoiceVideoStatus(req, res) {
         videoUrl: voiceVideo.videoUrl,
         aspectRatio: voiceVideo.aspectRatio,
         voiceName: voiceVideo.voiceName,
+        platform: voiceVideo.platform,
         errorMessage: voiceVideo.errorMessage,
         createdAt: voiceVideo.createdAt
       }
@@ -1241,9 +1315,143 @@ async function scheduleCompletedVideo(req, res) {
   }
 }
 
+function applyBannerOverlays(mainVideoPath, bannerPath, outputPath, timestamps, duration, aspectRatio) {
+  return new Promise((resolve, reject) => {
+    const isVertical = aspectRatio === '9:16';
+    const targetWidth = isVertical ? 360 : 640;
+    const targetY = isVertical ? 80 : 50;
+    const N = timestamps.length;
+
+    const filterComplex = [];
+    let lastOut = '[0:v]';
+
+    for (let i = 0; i < N; i++) {
+      const t_start = timestamps[i];
+      const bannerInputIdx = i + 1;
+      const overlayOut = `ov${bannerInputIdx}`;
+      const tempOut = i === N - 1 ? '[outv]' : `[temp${bannerInputIdx}]`;
+
+      // 1. Process the banner input (colorkey, scale, setpts)
+      filterComplex.push(
+        `[${bannerInputIdx}:v]colorkey=0x00FF00:0.3:0.2,scale=w=${targetWidth}:h=-1,setpts=PTS-STARTPTS+${t_start}/TB[${overlayOut}]`
+      );
+
+      // 2. Overlay it onto the main video at the top
+      filterComplex.push(
+        `${lastOut}[${overlayOut}]overlay=x=(W-w)/2:y=${targetY}:enable='between(t,${t_start},${t_start + duration})':eof_action=pass${tempOut}`
+      );
+
+      lastOut = tempOut;
+    }
+
+    const filterComplexStr = filterComplex.join('; ');
+
+    const cmd = ffmpeg().input(mainVideoPath);
+    for (let i = 0; i < N; i++) {
+      cmd.input(bannerPath);
+    }
+
+    cmd
+      .complexFilter(filterComplexStr)
+      .outputOptions([
+        '-map [outv]',
+        '-map 0:a',
+        '-c:v libx264',
+        '-pix_fmt yuv420p',
+        '-c:a copy'
+      ])
+      .output(outputPath)
+      .on('end', () => {
+        resolve();
+      })
+      .on('error', (err) => {
+        console.error('FFmpeg overlay rendering error:', err);
+        reject(err);
+      })
+      .run();
+  });
+}
+
+/**
+ * Retries a failed voice video generation job from the stopped point.
+ */
+async function retryVoiceVideo(req, res) {
+  try {
+    const { videoId } = req.params;
+    const userId = req.user.id; // From authMiddleware
+
+    if (!videoId) {
+      return res.status(400).json({
+        success: false,
+        message: "Missing 'videoId' parameter."
+      });
+    }
+
+    // Check user balance (minimum $0.50 required to start/retry generation)
+    const user = await User.findById(userId);
+    if (!user || user.accountbalance < 0.50) {
+      return res.status(400).json({
+        success: false,
+        message: "Insufficient account balance. Minimum $0.50 balance required."
+      });
+    }
+
+    const voiceVideo = await VoiceVideo.findById(videoId);
+    if (!voiceVideo) {
+      return res.status(404).json({
+        success: false,
+        message: "Voice video job not found"
+      });
+    }
+
+    // Verify ownership
+    if (voiceVideo.userId.toString() !== userId.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: "You are not authorized to retry this video job"
+      });
+    }
+
+    // Only allow retry if status is failed
+    if (voiceVideo.status !== 'failed') {
+      return res.status(400).json({
+        success: false,
+        message: `Only failed video jobs can be retried. Current status is '${voiceVideo.status}'`
+      });
+    }
+
+    // Reset status to pending, clear error message
+    voiceVideo.status = 'pending';
+    voiceVideo.errorMessage = undefined;
+    await voiceVideo.save();
+
+    // Respond immediately
+    res.status(202).json({
+      success: true,
+      message: "Voice video retry started in background",
+      data: {
+        videoId: voiceVideo._id,
+        status: voiceVideo.status,
+      }
+    });
+
+    // Run background worker
+    processVoiceVideoGeneration(voiceVideo._id, userId);
+
+  } catch (error) {
+    console.error("Voice video retry request error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to retry voice video generation",
+      error: error.message
+    });
+  }
+}
+
 module.exports = {
   generateVoiceVideo,
   getVoiceVideoStatus,
   getAllVoiceVideos,
-  scheduleCompletedVideo
+  scheduleCompletedVideo,
+  retryVoiceVideo
 };
