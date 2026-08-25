@@ -455,20 +455,22 @@ async function processVoiceVideoGeneration(videoId, userId) {
           console.log(`[Worker] Final video duration: ${finalVideoDuration}s, Banner duration: ${bannerDuration}s`);
 
           const d = bannerDuration;
+          const startOffset = 5;
+          const remainingDuration = Math.max(0, finalVideoDuration - startOffset);
 
-          // Determine overlay count N dynamically based on video duration to prevent overlap
+          // Determine overlay count N dynamically based on remaining video duration to prevent overlap
           let N = 3;
-          if (finalVideoDuration < d * 1.5) {
+          if (remainingDuration < d * 1.5) {
             N = 1;
-          } else if (finalVideoDuration < d * 2.5) {
+          } else if (remainingDuration < d * 2.5) {
             N = 2;
           }
 
-          // Calculate random non-overlapping timestamps
+          // Calculate random non-overlapping timestamps starting after 5 seconds
           const timestamps = [];
           for (let i = 0; i < N; i++) {
-            const segmentStart = i * (finalVideoDuration / N);
-            const segmentEnd = (i + 1) * (finalVideoDuration / N);
+            const segmentStart = startOffset + i * (remainingDuration / N);
+            const segmentEnd = startOffset + (i + 1) * (remainingDuration / N);
             const maxStart = segmentEnd - d;
             let t_start;
             if (maxStart > segmentStart) {
@@ -476,10 +478,10 @@ async function processVoiceVideoGeneration(videoId, userId) {
             } else {
               t_start = segmentStart + (segmentEnd - segmentStart - d) / 2;
             }
-            timestamps.push(parseFloat(Math.max(0, t_start).toFixed(3)));
+            timestamps.push(parseFloat(Math.max(startOffset, t_start).toFixed(3)));
           }
 
-          console.log(`[Worker] Overlaying banner ${N} times at timestamps: ${timestamps.join(', ')}s`);
+          console.log(`[Worker] Overlaying banner ${N} times at timestamps: ${timestamps.join(', ')}s (delayed by ${startOffset}s start offset)`);
 
           const overlaidVideoPath = path.join(tempJobDir, 'final_output_overlaid.mp4');
 
