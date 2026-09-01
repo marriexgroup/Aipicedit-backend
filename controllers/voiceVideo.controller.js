@@ -1176,13 +1176,13 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
  */
 async function scheduleCompletedVideo(req, res) {
   try {
-    const { videoId, pageId, scheduleDate, scheduleTime, caption, title, videoType = 'voice' } = req.body;
+    const { videoId, pageId, scheduleDate, scheduleTime, caption, title, videoType = 'voice', videoUrl } = req.body;
     const userId = req.user?.id || req.body.userId;
 
-    if (!videoId || !pageId || !scheduleDate || !scheduleTime) {
+    if ((!videoId && !videoUrl) || !pageId || !scheduleDate || !scheduleTime) {
       return res.status(400).json({
         success: false,
-        message: "Missing required scheduling fields (videoId, pageId, scheduleDate, scheduleTime)."
+        message: "Missing required scheduling fields (videoId/videoUrl, pageId, scheduleDate, scheduleTime)."
       });
     }
 
@@ -1190,7 +1190,10 @@ async function scheduleCompletedVideo(req, res) {
     let jobTitle = "";
     let jobDoc = null;
 
-    if (videoType === 'voice') {
+    if (videoUrl || videoType === 'direct' || videoType === 'custom') {
+      jobUrl = videoUrl;
+      jobTitle = title || "Video Post";
+    } else if (videoType === 'voice') {
       jobDoc = await VoiceVideo.findById(videoId);
       if (!jobDoc) {
         return res.status(404).json({ success: false, message: "Voice video not found." });
@@ -1264,7 +1267,7 @@ async function scheduleCompletedVideo(req, res) {
     const fbPayload = {
       file_url: jobUrl,
       title: title || jobTitle,
-      description: caption || (videoType === 'voice' ? jobDoc.prompt : ''),
+      description: caption || (videoType === 'voice' && jobDoc ? jobDoc.prompt : ''),
       published: false,
       scheduled_publish_time: unixTimestamp,
       access_token: pageDoc.accessToken
@@ -1286,7 +1289,7 @@ async function scheduleCompletedVideo(req, res) {
     }
 
     // Save scheduled details in the target video document if supported
-    if (videoType === 'voice') {
+    if (videoType === 'voice' && jobDoc) {
       jobDoc.pageId = pageId;
       jobDoc.isScheduled = true;
       jobDoc.scheduleDate = new Date(scheduleDate);
@@ -1296,7 +1299,7 @@ async function scheduleCompletedVideo(req, res) {
       jobDoc.fbScheduleStatus = 'scheduled';
       await jobDoc.save();
     } else {
-      console.log(`Video type ${videoType} (ID: ${videoId}) scheduled successfully on FB: ${fbData.id}`);
+      console.log(`Video type ${videoType} (ID: ${videoId || 'direct'}) scheduled successfully on FB: ${fbData.id}`);
     }
 
     return res.status(200).json({
