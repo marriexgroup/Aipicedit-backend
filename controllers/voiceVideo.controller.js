@@ -13,6 +13,7 @@ const { VoiceVideo, User, Generation, Video } = require('../db');
 const { uploadBuffer } = require('../services/s3.service');
 const Page = require('../models/page.model');
 const moment = require('moment-timezone');
+const { default: mongoose } = require('mongoose');
 
 // Configure ffmpeg path and make it executable on serverless environments
 try {
