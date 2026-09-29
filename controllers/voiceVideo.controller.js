@@ -867,7 +867,16 @@ function concatVideos(videoPaths, outputPath, tempDir) {
 async function getVoiceVideoStatus(req, res) {
   try {
     const { videoId } = req.params;
-    const voiceVideo = await VoiceVideo.findById(videoId);
+
+    if (!videoId || !mongoose.Types.ObjectId.isValid(videoId)) {
+
+      return res.status(400).json({
+        success: false,
+        message: "Invalid or missing videoId"
+      });
+    }
+
+const voiceVideo = await VoiceVideo.findById(videoId);
 
     if (!voiceVideo) {
       return res.status(404).json({
