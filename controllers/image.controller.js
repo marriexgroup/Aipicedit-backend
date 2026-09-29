@@ -1,5 +1,6 @@
 const { Runware } = require("@runware/sdk-js");
 const { getGeminiClient } = require('../services/geminiClient');
+process.env.AWS_SDK_JS_SUPPRESS_MAINTENANCE_MODE_MESSAGE = '1';
 const AWS = require('aws-sdk');
 const { Generation, User } = require("../db");
 const { generateImageOverlay } = require("./imageOverlay.contoller");

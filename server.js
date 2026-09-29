@@ -1,3 +1,6 @@
+// Suppress AWS SDK v2 maintenance mode warning
+process.env.AWS_SDK_JS_SUPPRESS_MAINTENANCE_MODE_MESSAGE = '1';
+
 const express = require('express');
 const authMiddleware = require('./auth.middleware');
 require('dotenv').config();
