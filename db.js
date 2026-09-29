@@ -12,10 +12,7 @@ const VoiceVideo = require('./models/voiceVideo.model');
 
 const connectDB = async () => {
   try {
-    await mongoose.connect(process.env.MONGODB_URI, {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
-    });
+    await mongoose.connect(process.env.MONGODB_URI);
     console.log('Successfully connected to Mongo.');
   } catch (err) {
     console.error('Failed to connect to MongoDB:', err);

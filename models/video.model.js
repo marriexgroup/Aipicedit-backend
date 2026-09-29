@@ -25,6 +25,8 @@ const VideoSchema = new mongoose.Schema({
       default: Date.now
     }
   }]
+}, {
+  suppressReservedKeysWarning: true
 });
 
 module.exports = mongoose.model('Video', VideoSchema);
