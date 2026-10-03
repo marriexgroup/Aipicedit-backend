@@ -1,6 +1,8 @@
 const { GoogleGenAI } = require("@google/genai");
 const Configs = require("../models/configs.model");
 
+const mongoose = require('mongoose');
+
 /**
  * Dynamically resolves and selects the active Gemini API key set by the admin.
  * Falls back to environment variables and alternative keys if selection is empty.
@@ -13,9 +15,11 @@ async function getGeminiApiKey() {
   let activeKeySelection = 'key1';
 
   try {
-    const config = await Configs.findOne({});
-    if (config && config.activeGeminiKey) {
-      activeKeySelection = config.activeGeminiKey;
+    if (mongoose.connection && mongoose.connection.readyState === 1) {
+      const config = await Configs.findOne({});
+      if (config && config.activeGeminiKey) {
+        activeKeySelection = config.activeGeminiKey;
+      }
     }
   } catch (err) {
     console.error("Error fetching Gemini config setting from DB:", err);

@@ -20,6 +20,7 @@ const paypalRoutes = require('./routes/paypal.routes'); // Import PayPal routes
 const configsRoutes = require('./routes/configs.routes');
 const aiAssistantRoutes = require('./routes/aiAssistant.routes');
 const voiceVideoRoutes = require('./routes/voiceVideoGen.routes');
+const apiV1Routes = require('./routes/apiV1.routes');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -60,6 +61,7 @@ app.use('/api/paypal', paypalRoutes);
 app.use('/api/configs', configsRoutes);
 app.use('/api/ai-assistant', aiAssistantRoutes);
 app.use('/api/voice-video', voiceVideoRoutes);
+app.use('/api/v1', cors(), apiV1Routes);
 
 
 // Global error handler (optional, but good practice)
